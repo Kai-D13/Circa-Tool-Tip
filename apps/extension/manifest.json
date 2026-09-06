@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Circa Tool-tip (dev)",
+  "version": "0.1.0",
+  "default_locale": "vi",
+  "description": "Hướng dẫn thao tác trên POS và Admin của Circa.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://pos.v2.circa.vn/*",
+    "https://admin.v2.circa.vn/*"
+  ],
+  "externally_connectable": {
+    "matches": ["http://localhost/*"]
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://pos.v2.circa.vn/*",
+        "https://admin.v2.circa.vn/*"
+      ],
+      "js": ["vendor/guide-schema.global.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

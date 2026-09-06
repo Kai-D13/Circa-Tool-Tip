@@ -15,7 +15,9 @@ Google Apps Script). **Không sửa repo cũ** — nó vẫn đang chạy produc
 | 1B | Chạy migration 0001–0004 + RPC test + seed | Xong — `ALL GUIDE RPC TESTS PASSED` trên project thật |
 | 2A | Admin Portal: login · import · triage | Xong — 48 guide / 409 step / 0 unassigned / POS 13 + Admin 35 |
 | 2B.1 | Guide editor (metadata, step CRUD, validate, conflict 40001) | Code xong, chờ QA — [`docs/QA_LOCALHOST_2B1.md`](docs/QA_LOCALHOST_2B1.md) |
-| 2B.2 | Recorder + preview draft (extension MV3) | Chưa bắt đầu |
+| 2B.2A | Nền tảng extension MV3: manifest, service worker, giao thức message, state phiên ghi | Code xong, chờ QA — [`docs/QA_LOCALHOST_2B2A.md`](docs/QA_LOCALHOST_2B2A.md) |
+| 2B.2B | Recorder chọn element trên POS/Admin | Chưa bắt đầu |
+| 2B.2C | Probe selector + preview draft | Chưa bắt đầu |
 | 2B.3 | Publish / release / rollback | Chưa bắt đầu |
 | 3 | Extension viewer + sync + UI adapter | Chưa bắt đầu |
 | 4 | QA 2 pha + Chrome Web Store Unlisted | Chưa bắt đầu |
@@ -24,7 +26,7 @@ Google Apps Script). **Không sửa repo cũ** — nó vẫn đang chạy produc
 
 ```
 apps/admin/            Next.js 16 Admin Portal          (2A: login/import/triage)
-apps/extension/        Chrome MV3                        (Batch 3)
+apps/extension/        Chrome MV3 (2B.2A: nền tảng; build -> dist/unpacked)
 packages/guide-schema/ Schema v5 + validator + URL matcher + checksum + flags
 scripts/import-legacy/ Importer v4 -> v5
 supabase/              migrations · rollback · seed · tests
@@ -44,11 +46,15 @@ dependency (Node 24 chạy TypeScript trực tiếp). `apps/admin` là Next.js 1
 node scripts/check-syntax.mjs                            # mọi file runtime phải parse
 node --test "packages/guide-schema/tests/*.test.mjs"     # unit test
 node scripts/import-legacy/cli.mjs                       # chạy lại importer
+node apps/extension/build.mjs                            # build extension -> apps/extension/dist/unpacked
 
 pnpm --filter admin test          # test logic thuần (import, triage, editor, RPC mapping, no-secrets)
 pnpm --filter admin typecheck
 pnpm --filter admin build
 pnpm --filter admin dev           # cần apps/admin/.env.local, xem docs/QA_LOCALHOST_2A.md
+
+pnpm --filter extension build     # sinh bundle GUIDE_SCHEMA + thư mục unpacked
+pnpm --filter extension test      # gồm test đối chiếu bundle với chính package
 ```
 
 Importer đọc file export v4 và ghi ra `data/legacy-import.v5.json` +
@@ -66,6 +72,10 @@ Importer đọc file export v4 và ghi ra `data/legacy-import.v5.json` +
 - **Bốn bảng, không hơn:** `sites`, `guides`, `releases`, `release_heads`. Không có
   bảng version theo từng guide, không có bảng nhóm — nhóm là cột text. Đây là feature
   nội bộ cho ~25 máy POS; thêm bảng là thêm chỗ sai.
+- **Extension KHÔNG được có bản sao thứ hai của schema.** `apps/extension/build.mjs` sinh
+  `vendor/guide-schema.global.js` từ `packages/guide-schema` bằng `node:module`
+  `stripTypeScriptTypes` — không bundler, không viết lại validator/matcher. Có test đối
+  chiếu bundle với package để nó không âm thầm trôi khỏi nhau.
 - **Flag không chặn publish.** Chúng nuôi repair queue và cảnh báo trên Portal; quyết
   định là của Admin (Plan v1.1 §P0-7).
 - **Migration `0001–0004` là baseline đã áp dụng trên Supabase.** Không sửa lại; thay đổi

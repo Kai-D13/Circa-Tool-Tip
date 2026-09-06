@@ -42,3 +42,11 @@ jobs:
 
       - name: Admin Portal build
         run: pnpm --filter admin build
+
+      # Extension: build sinh bundle guide-schema dùng chung, rồi test đối chiếu bundle
+      # với chính package để nó không âm thầm trở thành bản sao thứ hai.
+      - name: Extension build
+        run: pnpm --filter extension build
+
+      - name: Extension tests
+        run: pnpm --filter extension test
