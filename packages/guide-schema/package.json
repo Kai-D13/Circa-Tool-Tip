@@ -1,0 +1,9 @@
+{
+  "name": "@circa/guide-schema",
+  "version": "5.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Schema v5, validator, URL matcher, checksum and flags shared by portal, importer and extension",
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" }
+}
