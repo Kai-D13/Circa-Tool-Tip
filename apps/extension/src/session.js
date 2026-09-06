@@ -14,8 +14,12 @@
  * recorders on the same POS tab and the content script attaches to whichever one
  * `findByTab` happened to see first.
  *
- * Every mutation of a session is serialised per session id. appendStep and undo are
- * read-modify-write against storage; two of them in flight at once silently drop a step.
+ * Every mutation goes through ONE global queue. Per-session locking is not enough: the
+ * "one recorder per tab" rule is a property of the TAB, so two different session ids can
+ * both read "tab 7 is free" and both write themselves onto it. A single queue is also
+ * what appendStep/undo need — they are read-modify-write against storage, and two in
+ * flight at once silently drop a step. A recorder handles a handful of clicks, so
+ * serialising every mutation costs nothing and removes a whole class of race.
  *
  * The storage adapter is injected so this module is unit-testable without Chrome.
  */
@@ -23,6 +27,9 @@
 export const RECORDER_PREFIX = "tg:recorder:";
 
 export const SESSION_ERRORS = {
+  /** The payload is missing something the recorder cannot work without. */
+  INVALID_SESSION: "INVALID_SESSION",
+  /** That id is still recording; starting over it would discard captured steps. */
   SESSION_EXISTS: "SESSION_EXISTS",
   TAB_BUSY: "TAB_BUSY",
   DUPLICATE_TAB: "DUPLICATE_TAB",
@@ -44,18 +51,20 @@ export function recorderKey(sessionId) {
  * @param {{get(keys):Promise<object>, set(items):Promise<void>, remove(keys):Promise<void>}} storage
  */
 export function createRecorderStore(storage) {
-  /** sessionId -> tail of that session's mutation chain. */
-  const chains = new Map();
+  /** Tail of the single mutation queue. */
+  let queue = Promise.resolve();
 
-  /** Run `fn` after every earlier mutation of this session has settled. */
-  function serialize(sessionId, fn) {
-    const previous = chains.get(sessionId) ?? Promise.resolve();
-    const next = previous.then(fn, fn);
-    chains.set(sessionId, next.then(
+  /**
+   * Run `fn` after every earlier mutation has settled — including failed ones, so one
+   * rejected operation never stalls the queue.
+   */
+  function enqueue(fn) {
+    const run = queue.then(fn, fn);
+    queue = run.then(
       () => {},
       () => {},
-    ));
-    return next;
+    );
+    return run;
   }
 
   async function read(sessionId) {
@@ -94,11 +103,13 @@ export function createRecorderStore(storage) {
      * throw away steps the operator has already captured.
      */
     async start({ id, guideId, site, startUrl, tabId = null, mode = "append", stepId = null }) {
-      if (!id) throw new SessionError(SESSION_ERRORS.SESSION_EXISTS, "start: thiếu id phiên ghi");
-      if (!guideId) throw new SessionError(SESSION_ERRORS.SESSION_EXISTS, "start: thiếu guideId");
-      if (!site) throw new SessionError(SESSION_ERRORS.SESSION_EXISTS, "start: thiếu site");
+      // A malformed payload is not "this session already exists" — the Portal needs to
+      // tell the two apart to know whether retrying could ever help.
+      if (!id) throw new SessionError(SESSION_ERRORS.INVALID_SESSION, "start: thiếu id phiên ghi");
+      if (!guideId) throw new SessionError(SESSION_ERRORS.INVALID_SESSION, "start: thiếu guideId");
+      if (!site) throw new SessionError(SESSION_ERRORS.INVALID_SESSION, "start: thiếu site");
 
-      return serialize(id, async () => {
+      return enqueue(async () => {
         const existing = await read(id);
         if (existing && existing.status === "recording") {
           throw new SessionError(
@@ -127,7 +138,7 @@ export function createRecorderStore(storage) {
     get: read,
 
     async attachTab(sessionId, tabId) {
-      return serialize(sessionId, async () => {
+      return enqueue(async () => {
         const s = await read(sessionId);
         if (!s || s.status !== "recording") return null;
         await assertTabFree(tabId, sessionId);
@@ -141,7 +152,7 @@ export function createRecorderStore(storage) {
      * finished", not as a crash.
      */
     async appendStep(sessionId, step) {
-      return serialize(sessionId, async () => {
+      return enqueue(async () => {
         const s = await read(sessionId);
         if (!s || s.status !== "recording") return null;
         return write({ ...s, steps: [...s.steps, step] });
@@ -150,7 +161,7 @@ export function createRecorderStore(storage) {
 
     /** Remove the last captured step. A no-op on an empty session. */
     async undo(sessionId) {
-      return serialize(sessionId, async () => {
+      return enqueue(async () => {
         const s = await read(sessionId);
         if (!s || s.status !== "recording") return null;
         return write({ ...s, steps: s.steps.slice(0, -1) });
@@ -159,7 +170,7 @@ export function createRecorderStore(storage) {
 
     /** Mark the session finished; the steps stay readable until the Portal collects them. */
     async stop(sessionId) {
-      return serialize(sessionId, async () => {
+      return enqueue(async () => {
         const s = await read(sessionId);
         if (!s) return null;
         return write({ ...s, status: "done", stoppedAt: new Date().toISOString() });
@@ -167,7 +178,7 @@ export function createRecorderStore(storage) {
     },
 
     async discard(sessionId) {
-      return serialize(sessionId, async () => {
+      return enqueue(async () => {
         await storage.remove(recorderKey(sessionId));
         return null;
       });

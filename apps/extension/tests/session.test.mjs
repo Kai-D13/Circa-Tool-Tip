@@ -3,12 +3,20 @@ import assert from "node:assert/strict";
 
 import { RECORDER_PREFIX, SESSION_ERRORS, createRecorderStore, recorderKey } from "../src/session.js";
 
-/** Stand-in for chrome.storage.session, including its get(null) -> everything behaviour. */
-function fakeStorage(initial = {}) {
+/**
+ * Stand-in for chrome.storage.session, including its get(null) -> everything behaviour.
+ *
+ * `slow` inserts a real await between the read and the write of every operation. That is
+ * what a race needs in order to show up: without it two operations can happen to run to
+ * completion one after the other and a broken lock still looks fine.
+ */
+function fakeStorage(initial = {}, { slow = false } = {}) {
   let bag = { ...initial };
+  const tick = () => (slow ? new Promise((r) => setTimeout(r, 1)) : Promise.resolve());
   return {
     dump: () => ({ ...bag }),
     async get(keys) {
+      await tick();
       if (keys === null || keys === undefined) return { ...bag };
       const list = Array.isArray(keys) ? keys : [keys];
       const out = {};
@@ -16,6 +24,7 @@ function fakeStorage(initial = {}) {
       return out;
     },
     async set(items) {
+      await tick();
       bag = { ...bag, ...items };
     },
     async remove(keys) {
@@ -35,11 +44,16 @@ test("a session is written under a namespaced key so it is findable after a rest
   assert.ok(recorderKey("s1") in storage.dump(), "phải nằm trong storage, không phải biến trong worker");
 });
 
-test("start requires the fields the recorder cannot work without", async () => {
+test("P1: a malformed payload is INVALID_SESSION, not SESSION_EXISTS", async () => {
+  // The Portal uses the code to decide whether retrying could ever help. "Thiếu guideId"
+  // reported as SESSION_EXISTS would send it looking for a session that never existed.
   const store = createRecorderStore(fakeStorage());
-  await assert.rejects(() => store.start({ guideId: "g", site: "pos" }), /thiếu id/);
-  await assert.rejects(() => store.start({ id: "s", site: "pos" }), /thiếu guideId/);
-  await assert.rejects(() => store.start({ id: "s", guideId: "g" }), /thiếu site/);
+  for (const bad of [{ guideId: "g", site: "pos" }, { id: "s", site: "pos" }, { id: "s", guideId: "g" }]) {
+    await assert.rejects(() => store.start(bad), (err) => {
+      assert.equal(err.code, SESSION_ERRORS.INVALID_SESSION);
+      return true;
+    });
+  }
 });
 
 test("steps accumulate in order", async () => {
@@ -223,4 +237,86 @@ test("concurrent append and undo settle to a consistent session", async () => {
   await Promise.all([store.appendStep("s1", step("b")), store.undo("s1")]);
   const steps = (await store.get("s1")).steps;
   assert.equal(steps.length, 1, "một thêm + một xoá phải còn đúng một bước");
+});
+
+/* --------------------------------------- P0: race giữa các session KHÁC id */
+
+test("P0: two concurrent starts on the same tab — exactly one wins", async () => {
+  // A per-session lock does not help here: the ids differ, so both would read "tab 7 is
+  // free" and both would write themselves onto it.
+  const store = createRecorderStore(fakeStorage({}, { slow: true }));
+  const results = await Promise.allSettled([
+    store.start({ ...started, id: "s1" }),
+    store.start({ ...started, id: "s2" }),
+  ]);
+
+  const won = results.filter((r) => r.status === "fulfilled");
+  const lost = results.filter((r) => r.status === "rejected");
+  assert.equal(won.length, 1, "đúng một phiên được tạo");
+  assert.equal(lost.length, 1);
+  assert.equal(lost[0].reason.code, SESSION_ERRORS.TAB_BUSY);
+
+  // And the invariant actually holds in storage, not just in the return values.
+  assert.doesNotReject(() => store.findByTab(7));
+  assert.equal((await store.findByTab(7)).id, won[0].value.id);
+});
+
+test("P0: many concurrent starts on the same tab still leave one recorder", async () => {
+  const store = createRecorderStore(fakeStorage({}, { slow: true }));
+  const results = await Promise.allSettled(
+    ["a", "b", "c", "d", "e"].map((id) => store.start({ ...started, id })),
+  );
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  for (const r of results.filter((x) => x.status === "rejected")) {
+    assert.equal(r.reason.code, SESSION_ERRORS.TAB_BUSY);
+  }
+  const session = await store.findByTab(7);   // ném DUPLICATE_TAB nếu invariant hỏng
+  assert.ok(session);
+});
+
+test("P0: two concurrent attachTab calls on the same tab — exactly one wins", async () => {
+  const store = createRecorderStore(fakeStorage({}, { slow: true }));
+  await store.start({ ...started, id: "s1", tabId: null });
+  await store.start({ ...started, id: "s2", tabId: null });
+
+  const results = await Promise.allSettled([store.attachTab("s1", 7), store.attachTab("s2", 7)]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  assert.equal(results.find((r) => r.status === "rejected").reason.code, SESSION_ERRORS.TAB_BUSY);
+  assert.ok(await store.findByTab(7));
+});
+
+test("P0: concurrent start and attachTab cannot both claim a tab", async () => {
+  const store = createRecorderStore(fakeStorage({}, { slow: true }));
+  await store.start({ ...started, id: "s1", tabId: null });
+  const results = await Promise.allSettled([
+    store.attachTab("s1", 7),
+    store.start({ ...started, id: "s2", tabId: 7 }),
+  ]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  assert.ok(await store.findByTab(7));
+});
+
+test("P0: a rejected operation does not stall the queue", async () => {
+  const store = createRecorderStore(fakeStorage({}, { slow: true }));
+  await store.start(started);
+
+  await assert.rejects(() => store.start({ ...started, id: "s2" }));   // TAB_BUSY
+  // The queue must keep serving after that rejection.
+  const after = await store.appendStep("s1", step("a"));
+  assert.deepEqual(after.steps.map((x) => x.id), ["a"]);
+  assert.equal((await store.stop("s1")).status, "done");
+});
+
+test("P0: no interleaving of mutations ever produces DUPLICATE_TAB", async () => {
+  const store = createRecorderStore(fakeStorage({}, { slow: true }));
+  await Promise.allSettled([
+    store.start({ ...started, id: "s1" }),
+    store.start({ ...started, id: "s2" }),
+    store.start({ ...started, id: "s3", tabId: 8 }),
+    store.appendStep("s1", step("x")),
+    store.attachTab("s2", 7),
+  ]);
+  for (const tab of [7, 8, 9]) {
+    await assert.doesNotReject(() => store.findByTab(tab), `tab ${tab} bị trùng recorder`);
+  }
 });
