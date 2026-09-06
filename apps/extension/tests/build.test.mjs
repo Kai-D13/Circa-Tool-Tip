@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { resolveOutDir } from "../build.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILD = resolve(HERE, "../build.mjs");
@@ -92,4 +94,61 @@ test("every file the manifest references is actually built", () => {
 
 test("the service worker is a module, so it can import the shared schema", () => {
   assert.equal(SRC_MANIFEST.background.type, "module");
+});
+
+/* ------------------------------------------------- P0: --out không được xoá nhầm */
+
+test("P0: --out refuses paths whose deletion would take the repo with it", () => {
+  // main() bắt đầu bằng rmSync(OUT, { recursive: true, force: true }), nên một --out
+  // được tin tưởng mù quáng là một lệnh xoá repo.
+  for (const bad of [".", "..", "../..", resolve(HERE, "../../.."), resolve(HERE, ".."), resolve(HERE, "../../../..")]) {
+    assert.throws(() => resolveOutDir(["--out", bad]), /từ chối/, `${bad} phải bị từ chối`);
+  }
+});
+
+test("P0: --out refuses anything outside the OS temp directory", () => {
+  assert.throws(() => resolveOutDir(["--out", resolve(HERE, "cho-nay")]), /thư mục tạm/);
+  assert.throws(() => resolveOutDir(["--out", join(tmpdir(), "khong-dung-prefix")]), /tg-ext-/);
+});
+
+test("P0: --out requires a value", () => {
+  assert.throws(() => resolveOutDir(["--out"]), /cần một đường dẫn/);
+  assert.throws(() => resolveOutDir(["--out", "--release"]), /cần một đường dẫn/);
+});
+
+test("--out accepts the default output dir and a tg-ext- scratch dir", () => {
+  assert.doesNotThrow(() => resolveOutDir([]));
+  const scratch = mkdtempSync(join(tmpdir(), "tg-ext-"));
+  try {
+    assert.equal(resolveOutDir(["--out", scratch]), resolve(scratch));
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("P0 REGRESSION: a refused --out deletes nothing", () => {
+  // Sentinel: chạy build thật với --out trỏ vào một thư mục có dữ liệu, rồi khẳng định
+  // dữ liệu còn nguyên.
+  const victim = mkdtempSync(join(tmpdir(), "tg-victim-"));
+  const sentinel = join(victim, "dung-xoa-toi.txt");
+  writeFileSync(sentinel, "dữ liệu quan trọng", "utf8");
+  try {
+    assert.throws(
+      () => execFileSync(process.execPath, [BUILD, "--out", victim], { stdio: "pipe" }),
+      /./,
+      "build phải thất bại",
+    );
+    assert.ok(existsSync(sentinel), "file sentinel bị xoá — --out vẫn nguy hiểm");
+    assert.equal(readFileSync(sentinel, "utf8"), "dữ liệu quan trọng");
+  } finally {
+    rmSync(victim, { recursive: true, force: true });
+  }
+});
+
+test("P0 REGRESSION: --out . leaves the repository intact", () => {
+  const repoRoot = resolve(HERE, "../../..");
+  assert.throws(() => execFileSync(process.execPath, [BUILD, "--out", "."], { cwd: repoRoot, stdio: "pipe" }));
+  for (const survivor of ["package.json", "README.md", "packages/guide-schema/src/index.ts"]) {
+    assert.ok(existsSync(join(repoRoot, survivor)), `${survivor} biến mất — --out . đã xoá repo`);
+  }
 });

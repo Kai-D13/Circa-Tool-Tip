@@ -21,9 +21,10 @@
  * 2. Copy the manifest and sources, rewriting `externally_connectable` for the target.
  */
 
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -113,13 +114,66 @@ ${names.map((n) => `    ${n},`).join("\n")}
 `;
 }
 
-function main() {
-  const argv = process.argv.slice(2);
+/** realpath when the path exists, otherwise the realpath of its parent + the name. */
+function realish(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    try {
+      return join(realpathSync(dirname(p)), basename(p));
+    } catch {
+      return resolve(p);
+    }
+  }
+}
+
+function isInside(parent, child) {
+  const rel = relative(parent, child);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * Decide where the build may write — and therefore what it may DELETE, because the first
+ * thing main() does is rmSync(OUT, { recursive: true, force: true }).
+ *
+ * Trusting --out blindly means `--out .` erases the repository. So the flag is an
+ * allowlist, not a path: either the one real output directory, or a scratch directory
+ * that the OS temp dir owns and whose name we chose. Everything else is refused.
+ *
+ * Exported for tests.
+ */
+export function resolveOutDir(argv) {
+  const at = argv.indexOf("--out");
+  if (at < 0) return DEFAULT_OUT;
+
+  const raw = argv[at + 1];
+  if (!raw || raw.startsWith("--")) throw new Error("--out cần một đường dẫn cụ thể đi kèm.");
+
+  const out = realish(resolve(raw));
+  if (out === realish(DEFAULT_OUT)) return DEFAULT_OUT;
+
+  // Refuse anything that would take the repo (or more) with it.
+  const repo = realish(REPO);
+  const ext = realish(HERE);
+  if (out === repo || out === ext || isInside(out, repo) || out === realish(resolve(out, ".."))) {
+    throw new Error(`--out từ chối "${raw}": build sẽ XOÁ thư mục này, mà nó chứa repo hoặc chính nó là gốc.`);
+  }
+
+  // Otherwise: only a scratch directory inside the OS temp dir, named by us.
+  const tmp = realish(tmpdir());
+  if (!isInside(tmp, out)) {
+    throw new Error(`--out từ chối "${raw}": chỉ nhận thư mục tạm của hệ điều hành (${tmp}).`);
+  }
+  if (!basename(out).startsWith("tg-ext-")) {
+    throw new Error(`--out từ chối "${raw}": thư mục tạm phải có tên bắt đầu bằng "tg-ext-".`);
+  }
+  return out;
+}
+
+export function main(argv) {
   const releaseAt = argv.indexOf("--release");
   const portalOrigin = releaseAt >= 0 ? argv[releaseAt + 1] : null;
-  const outAt = argv.indexOf("--out");
-  // --out lets a test build into a temp directory instead of clobbering dist/.
-  const OUT = outAt >= 0 ? resolve(argv[outAt + 1]) : DEFAULT_OUT;
+  const OUT = resolveOutDir(argv);
 
   if (releaseAt >= 0) {
     if (!portalOrigin || !/^https:\/\/[a-z0-9.-]+$/i.test(portalOrigin)) {
@@ -158,4 +212,7 @@ function main() {
   console.log("\nChrome -> chrome://extensions -> Developer mode -> Load unpacked -> chọn thư mục trên.");
 }
 
-main();
+// Only run when executed directly, so tests can import resolveOutDir without building.
+if (process.argv[1] && realish(process.argv[1]) === realish(fileURLToPath(import.meta.url))) {
+  main(process.argv.slice(2));
+}

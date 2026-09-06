@@ -22,6 +22,12 @@ import {
 } from "./protocol.js";
 import { createRecorderStore } from "./session.js";
 
+/** A SessionError carries a code the protocol already knows; anything else is INTERNAL. */
+function errorCodeOf(err) {
+  const code = err?.code;
+  return code && Object.values(ERROR_CODES).includes(code) ? code : ERROR_CODES.INTERNAL;
+}
+
 const EXT_VERSION = chrome.runtime.getManifest().version;
 /** Single source of truth: whatever the manifest allows, nothing else. */
 const ALLOWED_PORTAL_ORIGINS = originsFromMatches(
@@ -66,7 +72,7 @@ chrome.runtime.onMessageExternal.addListener((raw, sender, sendResponse) => {
 
   handleOneShot(parsed)
     .then(sendResponse)
-    .catch((err) => sendResponse(fail(parsed.type, ERROR_CODES.INTERNAL, String(err?.message ?? err))));
+    .catch((err) => sendResponse(fail(parsed.type, errorCodeOf(err), String(err?.message ?? err))));
   return true; // async response
 });
 
@@ -113,7 +119,7 @@ chrome.runtime.onConnectExternal.addListener((port) => {
       return;
     }
     handlePort(parsed, port).catch((err) =>
-      port.postMessage(fail(parsed.type, ERROR_CODES.INTERNAL, String(err?.message ?? err))),
+      port.postMessage(fail(parsed.type, errorCodeOf(err), String(err?.message ?? err))),
     );
   });
 });
@@ -161,7 +167,12 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
     store
       .findByTab(tabId)
       .then((session) => sendResponse(ok("tg:hello", { tabId, recording: session })))
-      .catch(() => sendResponse(ok("tg:hello", { tabId, recording: null })));
+      .catch((err) => {
+        // DUPLICATE_TAB means the one-recorder-per-tab invariant broke. Say so instead
+        // of handing the page an arbitrary session.
+        console.error("[tooltip] findByTab thất bại:", err);
+        sendResponse(fail("tg:hello", errorCodeOf(err), String(err?.message ?? err)));
+      });
     return true;
   }
   return false;

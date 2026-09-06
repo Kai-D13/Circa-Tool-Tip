@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { RECORDER_PREFIX, createRecorderStore, recorderKey } from "../src/session.js";
+import { RECORDER_PREFIX, SESSION_ERRORS, createRecorderStore, recorderKey } from "../src/session.js";
 
 /** Stand-in for chrome.storage.session, including its get(null) -> everything behaviour. */
 function fakeStorage(initial = {}) {
@@ -123,4 +123,104 @@ test("attachTab binds a session to the tab the recorder opened", async () => {
   await store.start({ ...started, tabId: null });
   assert.equal((await store.attachTab("s1", 42)).tabId, 42);
   assert.equal((await store.findByTab(42)).id, "s1");
+});
+
+/* ------------------------------------------------------------------ invariants */
+
+test("P1: an active session id cannot be started over the top of itself", async () => {
+  // A double-click on START would otherwise wipe every step already captured.
+  const store = createRecorderStore(fakeStorage());
+  await store.start(started);
+  await store.appendStep("s1", step("a"));
+
+  await assert.rejects(() => store.start(started), (err) => {
+    assert.equal(err.code, SESSION_ERRORS.SESSION_EXISTS);
+    return true;
+  });
+  assert.deepEqual((await store.get("s1")).steps.map((x) => x.id), ["a"], "bước đã ghi không được mất");
+});
+
+test("a finished session id may be reused", async () => {
+  const store = createRecorderStore(fakeStorage());
+  await store.start(started);
+  await store.stop("s1");
+  const again = await store.start(started);
+  assert.equal(again.status, "recording");
+  assert.deepEqual(again.steps, []);
+});
+
+test("P1: a tab can host only one recording session", async () => {
+  const store = createRecorderStore(fakeStorage());
+  await store.start(started);                       // tab 7
+  await assert.rejects(
+    () => store.start({ ...started, id: "s2" }),    // cũng tab 7
+    (err) => {
+      assert.equal(err.code, SESSION_ERRORS.TAB_BUSY);
+      assert.match(err.message, /s1/, "phải nói rõ phiên nào đang giữ tab");
+      return true;
+    },
+  );
+  assert.equal(await store.get("s2"), null, "phiên thứ hai không được tạo ra");
+});
+
+test("a tab frees up once its session stops", async () => {
+  const store = createRecorderStore(fakeStorage());
+  await store.start(started);
+  await store.stop("s1");
+  const s2 = await store.start({ ...started, id: "s2" });
+  assert.equal(s2.tabId, 7);
+});
+
+test("P1: attachTab refuses a tab another session is recording on", async () => {
+  const store = createRecorderStore(fakeStorage());
+  await store.start(started);                                  // s1 giữ tab 7
+  await store.start({ ...started, id: "s2", tabId: null });
+  await assert.rejects(() => store.attachTab("s2", 7), (err) => {
+    assert.equal(err.code, SESSION_ERRORS.TAB_BUSY);
+    return true;
+  });
+  assert.equal((await store.get("s2")).tabId, null);
+});
+
+test("attaching a session to the tab it already holds is allowed", async () => {
+  const store = createRecorderStore(fakeStorage());
+  await store.start(started);
+  assert.equal((await store.attachTab("s1", 7)).tabId, 7);
+});
+
+test("P1: findByTab refuses to guess when the invariant is broken", async () => {
+  // Reach into storage directly to fabricate the corrupt state start() prevents.
+  const storage = fakeStorage();
+  const store = createRecorderStore(storage);
+  await store.start(started);
+  await storage.set({
+    [recorderKey("rogue")]: { v: 1, id: "rogue", status: "recording", tabId: 7, steps: [] },
+  });
+  await assert.rejects(() => store.findByTab(7), (err) => {
+    assert.equal(err.code, SESSION_ERRORS.DUPLICATE_TAB);
+    return true;
+  });
+});
+
+test("P1: concurrent appends do not lose steps", async () => {
+  // appendStep is read-modify-write against storage; without serialisation the later
+  // write clobbers the earlier one and a captured click disappears.
+  const store = createRecorderStore(fakeStorage());
+  await store.start(started);
+  await Promise.all([
+    store.appendStep("s1", step("a")),
+    store.appendStep("s1", step("b")),
+    store.appendStep("s1", step("c")),
+  ]);
+  const ids = (await store.get("s1")).steps.map((x) => x.id).sort();
+  assert.deepEqual(ids, ["a", "b", "c"]);
+});
+
+test("concurrent append and undo settle to a consistent session", async () => {
+  const store = createRecorderStore(fakeStorage());
+  await store.start(started);
+  await store.appendStep("s1", step("a"));
+  await Promise.all([store.appendStep("s1", step("b")), store.undo("s1")]);
+  const steps = (await store.get("s1")).steps;
+  assert.equal(steps.length, 1, "một thêm + một xoá phải còn đúng một bước");
 });
