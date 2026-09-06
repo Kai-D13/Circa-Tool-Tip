@@ -42,24 +42,32 @@ function countBy(items, keyFn) {
   return [...map.entries()].sort((a, b) => b[1] - a[1]);
 }
 
-export function buildReport({ source, guides, payloadChecksum, piiHits, generatedAt }) {
+export function buildReport({ source, guides, contentChecksum, piiHits }) {
   const allSteps = guides.flatMap((g) => g.steps.map((s) => ({ guide: g, step: s })));
   const lines = [];
   const P = (s = "") => lines.push(s);
 
   P("# IMPORT REPORT — legacy v4 -> v5");
   P();
-  P("Sinh bởi `scripts/import-legacy/cli.mjs`. Batch 1A, chưa ghi vào Supabase.");
+  P("Sinh bởi `scripts/import-legacy/cli.mjs`. Chưa ghi gì vào Supabase.");
+  P();
+  P("Báo cáo này KHÔNG chứa thời điểm chạy: chạy lại importer trên cùng file nguồn phải");
+  P("cho ra file y hệt, nếu không thì worktree bẩn sau mỗi lần chạy.");
   P();
   P("| | |");
   P("|---|---|");
-  P(`| Thời điểm chạy | ${generatedAt} |`);
   P(`| File nguồn | \`${esc(source.filePath)}\` |`);
-  P(`| Kích thước | ${source.bytes} bytes |`);
-  P(`| SHA256 | \`${source.sha256}\` |`);
+  P(`| Kích thước nguồn | ${source.bytes} bytes |`);
+  P(`| \`sourceFileSha256\` | \`${source.sha256}\` |`);
   P(`| exportedAt | ${esc(source.exportedAt)} |`);
   P(`| targetDomain gốc | ${esc(source.targetDomain)} |`);
-  P(`| Checksum artifact | \`${payloadChecksum}\` |`);
+  P(`| \`contentChecksum\` | \`${contentChecksum}\` |`);
+  P();
+  P("Ba loại checksum, đừng dùng lẫn:");
+  P();
+  P("- **`sourceFileSha256`** — SHA-256 của file export v4 gốc.");
+  P("- **`contentChecksum`** — SHA-256 của phần nội dung artifact (không gồm chính nó). Đây là thứ nhúng trong `data/legacy-import.v5.json` và truyền cho `admin_import_legacy`.");
+  P("- **`artifactFileSha256`** — SHA-256 của cả file artifact trên đĩa. Không nhúng vào file (không thể tự chứa hash của chính mình); tính bằng `sha256sum data/legacy-import.v5.json` khi cần đối soát.");
   P();
 
   /* ---------------------------------------------------------------- totals */
@@ -204,8 +212,47 @@ export function buildReport({ source, guides, payloadChecksum, piiHits, generate
   }
   P();
 
+  /* ------------------------------------------------- dynamic URL (audit P0-4) */
+  P("## 9. Sáu bước URL động sau khi sửa");
+  P();
+  P("Record id trong query không bị xoá trắng — làm vậy sẽ để lại URL chết. URL được nới");
+  P("thành wildcard, và `navigationUrl` bị bỏ trống vì các trang này chỉ tới được bằng cách");
+  P("click qua bước trước.");
+  P();
+  P("| Guide | Bước | urlPattern | navigationUrl | action | Bước trước |");
+  P("|---|---:|---|---|---|---|");
+  for (const { guide, step } of allSteps) {
+    if (!(step.flags || []).includes(FLAGS.URL_UUID_STRIPPED)) continue;
+    const i = guide.steps.indexOf(step);
+    const prev = i > 0 ? guide.steps[i - 1].action.type : "—";
+    P(
+      `| ${esc(guide.name)} | ${i + 1} | \`${esc(step.urlPattern)}\` | ` +
+        `${step.navigationUrl ? "`" + esc(step.navigationUrl) + "`" : "*(trống)*"} | ` +
+        `\`${step.action.type}\` | \`${prev}\` |`,
+    );
+  }
+  P();
+
+  /* --------------------------------------------- broad selectors (audit ruling) */
+  const broad = allSteps.filter(({ step }) => (step.flags || []).includes(FLAGS.SEL_BROAD));
+  P("## 10. Bốn cảnh báo selector quá rộng");
+  P();
+  P("Stakeholder duyệt hạ từ error xuống warning, **kèm điều kiện**: cả bốn vào repair/QA");
+  P("queue bắt buộc, và runtime chỉ auto-click khi text match là exact + unique + element");
+  P("actionable — không có fallback kiểu 'lấy candidate đầu tiên' cho selector rộng.");
+  P();
+  P("| Guide | Bước | Selector chính | Số candidate | matchText | action |");
+  P("|---|---:|---|---:|---|---|");
+  for (const { guide, step } of broad) {
+    P(
+      `| ${esc(guide.name)} | ${guide.steps.indexOf(step) + 1} | \`${esc(step.selectors[0] || "")}\` | ` +
+        `${step.selectors.length} | ${esc(step.matchText) || "*(trống)*"} | \`${step.action.type}\` |`,
+    );
+  }
+  P();
+
   /* ---------------------------------------------------------------- acceptance */
-  P("## 9. Acceptance Batch 1A");
+  P("## 11. Acceptance Batch 1A");
   P();
   P("| Tiêu chí | Kết quả |");
   P("|---|---|");

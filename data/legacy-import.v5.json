@@ -4,7 +4,7 @@
   "source": {
     "filename": "tooltip-guide-pos.v2.circa.vn (1) (1).json",
     "bytes": 378029,
-    "sha256": "8d791365a0b7dda183727ebf64f9148ef76fc2459d3c57d2a8d4d3a09ad7fb3e",
+    "sourceFileSha256": "8d791365a0b7dda183727ebf64f9148ef76fc2459d3c57d2a8d4d3a09ad7fb3e",
     "exportedAt": "2026-08-21T11:12:34.694Z",
     "legacyVersion": 4,
     "targetDomain": "pos.v2.circa.vn"
@@ -745,7 +745,7 @@
           "navigationUrl": "/sellback/eligible",
           "action": {
             "type": "auto_click_wait_url",
-            "expectedUrl": "/sellback/create",
+            "expectedUrl": "/sellback/create*",
             "timeoutMs": 0
           },
           "flags": [
@@ -763,11 +763,11 @@
           "tag": "th",
           "title": "kiểm tra và chỉnh số lượng",
           "content": "DS chọn kiểm tra và chỉnh số lượng",
-          "urlPattern": "/sellback/create",
-          "navigationUrl": "/sellback/create",
+          "urlPattern": "/sellback/create*",
+          "navigationUrl": "",
           "action": {
             "type": "auto_click_wait_url",
-            "expectedUrl": "/sellback/create",
+            "expectedUrl": "/sellback/create*",
             "timeoutMs": 0
           },
           "urlMatchMode": "path_query",
@@ -787,8 +787,8 @@
           "tag": "button",
           "title": "tạo phiếu bán lại",
           "content": "DS chọn tạo phiếu bán lại",
-          "urlPattern": "/sellback/create",
-          "navigationUrl": "/sellback/create",
+          "urlPattern": "/sellback/create*",
+          "navigationUrl": "",
           "action": {
             "type": "highlight",
             "expectedUrl": "",
@@ -808,11 +808,11 @@
         "entryVote": "pos",
         "posScore": 5,
         "adminScore": 0,
-        "neutralScore": 16,
+        "neutralScore": 14,
         "confidence": "medium",
         "reason": "Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. Phần lớn route là trung tính nên bằng chứng yếu.",
         "prefixes": {
-          "sellback": 16,
+          "sellback": 14,
           "trang-chu": 5
         }
       },
@@ -3086,7 +3086,7 @@
           "navigationUrl": "/sellback/new",
           "action": {
             "type": "auto_click_wait_url",
-            "expectedUrl": "/sellback/eligible",
+            "expectedUrl": "/sellback/eligible*",
             "timeoutMs": 0
           },
           "flags": [
@@ -3104,11 +3104,11 @@
           "tag": "th",
           "title": "chọn sản phẩm",
           "content": "DS chọn sản phẩm",
-          "urlPattern": "/sellback/eligible",
-          "navigationUrl": "/sellback/eligible",
+          "urlPattern": "/sellback/eligible*",
+          "navigationUrl": "",
           "action": {
             "type": "auto_click_wait_url",
-            "expectedUrl": "/sellback/eligible",
+            "expectedUrl": "/sellback/eligible*",
             "timeoutMs": 0
           },
           "urlMatchMode": "path_query",
@@ -3131,11 +3131,11 @@
           "tag": "button",
           "title": "thêm sản phẩm vào phiếu",
           "content": "DS chọn thêm sản phẩm vào phiếu",
-          "urlPattern": "/sellback/eligible",
-          "navigationUrl": "/sellback/eligible",
+          "urlPattern": "/sellback/eligible*",
+          "navigationUrl": "",
           "action": {
             "type": "auto_click_wait_url",
-            "expectedUrl": "/sellback/new",
+            "expectedUrl": "/sellback/new*",
             "timeoutMs": 0
           },
           "urlMatchMode": "path_query",
@@ -3155,11 +3155,11 @@
           "tag": "div",
           "title": "bổ sung sản phẩm thêm nếu cần",
           "content": "DS chọn bổ sung sản phẩm thêm nếu cần",
-          "urlPattern": "/sellback/new",
-          "navigationUrl": "/sellback/new",
+          "urlPattern": "/sellback/new*",
+          "navigationUrl": "",
           "action": {
             "type": "auto_click_wait_url",
-            "expectedUrl": "/sellback/new",
+            "expectedUrl": "/sellback/new*",
             "timeoutMs": 0
           },
           "urlMatchMode": "path_query",
@@ -3182,8 +3182,8 @@
           "tag": "button",
           "title": "gửi phiếu bán lại hoặc hủy nháp",
           "content": "DS chọn gửi phiếu bán lại hoặc hủy nháp",
-          "urlPattern": "/sellback/new",
-          "navigationUrl": "/sellback/new",
+          "urlPattern": "/sellback/new*",
+          "navigationUrl": "",
           "action": {
             "type": "highlight",
             "expectedUrl": "",
@@ -3202,11 +3202,11 @@
         "entryVote": "admin",
         "posScore": 0,
         "adminScore": 5,
-        "neutralScore": 16,
+        "neutralScore": 12,
         "confidence": "medium",
         "reason": "Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. Phần lớn route là trung tính nên bằng chứng yếu.",
         "prefixes": {
-          "sellback": 16,
+          "sellback": 12,
           "tai-khoan": 5
         }
       },
@@ -10556,5 +10556,5 @@
       }
     }
   ],
-  "checksum": "sha256:4f7d495f18d3ecc716506882c742adfe0c4ab60574f0f08b69eb8369add552ef"
+  "contentChecksum": "sha256:b96b5ef5aa6086809b3c4a3ac6dea93bea6a1047a4d697244e777e584b3156ce"
 }

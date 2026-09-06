@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { canonicalJson, releaseChecksum, sha256Hex, sha256Tagged } from "../src/checksum.ts";
+import { canonicalJson, sha256Hex, sha256Tagged } from "../src/checksum.ts";
 
 test("sha256 matches the published vectors", async () => {
   assert.equal(await sha256Hex(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
@@ -33,23 +33,12 @@ test("unicode survives the round trip", () => {
   assert.equal(JSON.parse(s).vi, "Đơn hàng");
 });
 
-const payload = (over = {}) => ({
-  schemaVersion: 5,
-  site: "pos",
-  sites: { pos: "https://pos.v2.circa.vn", admin: "https://admin.v2.circa.vn" },
-  groups: [{ id: "g1", name: "Ban hang", sortOrder: 1 }],
-  guides: [{ id: "gu1", name: "A", site: "pos", steps: [] }],
-  ...over,
-});
-
-test("release checksum ignores revision and releasedAt", async () => {
-  const a = await releaseChecksum({ ...payload(), revision: 1, releasedAt: "2026-01-01T00:00:00Z" });
-  const b = await releaseChecksum({ ...payload(), revision: 99, releasedAt: "2026-09-06T00:00:00Z" });
-  assert.equal(a, b, "same content republished must checksum the same");
-});
-
-test("release checksum changes when content changes", async () => {
-  const a = await releaseChecksum(payload());
-  const b = await releaseChecksum(payload({ guides: [{ id: "gu1", name: "B", site: "pos", steps: [] }] }));
-  assert.notEqual(a, b);
+test("the artifact content checksum ignores key order but not content", async () => {
+  // What the legacy importer relies on: the same content, serialised in a different key
+  // order, must hash the same; a real change must not.
+  const a = await sha256Tagged(canonicalJson({ guides: [{ name: "A", site: "pos" }], stats: { steps: 1 } }));
+  const b = await sha256Tagged(canonicalJson({ stats: { steps: 1 }, guides: [{ site: "pos", name: "A" }] }));
+  const c = await sha256Tagged(canonicalJson({ guides: [{ name: "B", site: "pos" }], stats: { steps: 1 } }));
+  assert.equal(a, b);
+  assert.notEqual(a, c);
 });

@@ -93,7 +93,7 @@ async function main() {
     source: {
       filename: args.source.split(/[\\/]/).pop(),
       bytes: source.bytes,
-      sha256: source.sha256,
+      sourceFileSha256: source.sha256,
       exportedAt: source.exportedAt,
       legacyVersion: source.legacyVersion,
       targetDomain: source.targetDomain,
@@ -101,20 +101,17 @@ async function main() {
     stats: { guides: guides.length, steps: outSteps },
     guides,
   };
-  // Checksum covers content only — no timestamp — so re-running is byte-identical.
-  const payloadChecksum = await sha256Tagged(canonicalJson(content));
+  // Covers content only - no timestamp - so re-running produces a byte-identical file.
+  // Named `contentChecksum` to stay distinct from the SHA-256 of the artifact FILE
+  // (which the file cannot contain, since embedding it would change the file) and from
+  // the SHA-256 of the legacy SOURCE file.
+  const contentChecksum = await sha256Tagged(canonicalJson(content));
 
   mkdirSync(dirname(args.out), { recursive: true });
-  writeFileSync(args.out, JSON.stringify({ ...content, checksum: payloadChecksum }, null, 2) + "\n", "utf8");
+  writeFileSync(args.out, JSON.stringify({ ...content, contentChecksum }, null, 2) + "\n", "utf8");
   console.log("Ghi  :", args.out);
 
-  const report = buildReport({
-    source,
-    guides,
-    payloadChecksum,
-    piiHits,
-    generatedAt: new Date().toISOString(),
-  });
+  const report = buildReport({ source, guides, contentChecksum, piiHits });
   mkdirSync(dirname(args.report), { recursive: true });
   writeFileSync(args.report, report, "utf8");
   console.log("Ghi  :", args.report);
@@ -129,7 +126,8 @@ async function main() {
   console.log(`  step             : ${outSteps}`);
   console.log(`  chưa gán site    : ${guides.filter((g) => g.siteCode === null).length}`);
   console.log(`  PII còn lại      : ${piiHits.length}`);
-  console.log(`  checksum         : ${payloadChecksum}`);
+  console.log(`  sourceFileSha256 : ${source.sha256}`);
+  console.log(`  contentChecksum  : ${contentChecksum}`);
   console.log("  flag:");
   for (const [f, n] of [...flagCounts.entries()].sort((a, b) => b[1] - a[1])) {
     console.log(`    ${String(n).padStart(4)}  ${f}`);

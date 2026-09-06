@@ -187,7 +187,7 @@ export function validateReleasePayload(payload: unknown, expectedSite?: SiteCode
     }
   }
 
-  const groupIds = new Set((p.groups as { id: string }[]).map((g) => g.id));
+  const groups = new Set(p.groups as string[]);
   const guideIds = new Set<string>();
 
   for (const guide of p.guides as ReleasePayload["guides"]) {
@@ -202,8 +202,8 @@ export function validateReleasePayload(payload: unknown, expectedSite?: SiteCode
     if (!guide.site || !sites[guide.site]) {
       errors.push(gLabel + ": site '" + String(guide.site) + "' không có trong bản đồ sites.");
     }
-    if (guide.groupId && !groupIds.has(guide.groupId)) {
-      errors.push(gLabel + ": groupId không tồn tại trong release.");
+    if (guide.group && !groups.has(guide.group)) {
+      errors.push(gLabel + ": nhóm '" + guide.group + "' không có trong danh sách groups của release.");
     }
     if (!guide.start || !guide.start.site || !sites[guide.start.site]) {
       errors.push(gLabel + ": start.site không hợp lệ.");

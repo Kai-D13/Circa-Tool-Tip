@@ -134,16 +134,15 @@ const release = (over = {}) => ({
   releasedAt: "2026-09-06T00:00:00.000Z",
   checksum: "sha256:deadbeef",
   sites: { pos: "https://pos.v2.circa.vn", admin: "https://admin.v2.circa.vn" },
-  groups: [{ id: "g1", name: "Ban hang", sortOrder: 1 }],
+  groups: ["Ban hang"],
   guides: [
     {
       id: "gu1",
       legacyId: "gmrn761p80rf1",
       name: "BAN HANG TAI QUAY",
       site: "pos",
-      groupId: "g1",
+      group: "Ban hang",
       sortOrder: 1,
-      guideRevision: 1,
       start: { site: "pos", url: "/trang-chu" },
       steps: [{ ...step(), site: "pos" }],
     },
@@ -175,10 +174,10 @@ test("a step naming a site that is not in the sites map is rejected", () => {
   assert.ok(has(validateReleasePayload(bad, "pos").errors, "staging"));
 });
 
-test("a groupId that does not exist in the release is rejected", () => {
+test("a group label that is not listed in the release is rejected", () => {
   const bad = release();
-  bad.guides[0].groupId = "ghost";
-  assert.ok(has(validateReleasePayload(bad, "pos").errors, "groupId"));
+  bad.guides[0].group = "Khong co";
+  assert.ok(has(validateReleasePayload(bad, "pos").errors, "Khong co"));
 });
 
 test("a non-https origin is rejected", () => {

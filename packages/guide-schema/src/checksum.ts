@@ -48,25 +48,15 @@ export async function sha256Tagged(input: string): Promise<string> {
   return "sha256:" + (await sha256Hex(input));
 }
 
-/**
- * Release checksum covers ONLY the content that must not change silently: the groups
- * and the guides. `revision`, `releasedAt` and `checksum` itself are excluded so the
- * same content republished is recognisably the same content.
+/*
+ * There is deliberately no releaseChecksum() here.
+ *
+ * Release checksums are computed SERVER-SIDE as sha256(jsonb::text). Postgres serialises
+ * jsonb deterministically, but that ordering is not reproducible from JavaScript, so a
+ * second implementation here could only ever disagree with the database. The extension
+ * instead compares release_heads.checksum with the checksum embedded in the payload it
+ * downloaded, which is the failure that actually matters: the head moving mid-download.
+ *
+ * canonicalJson + sha256Tagged above remain useful for content the CLIENT owns, such as
+ * the legacy import artifact.
  */
-export async function releaseChecksum(payload: {
-  schemaVersion: number;
-  site: string;
-  sites: Record<string, string>;
-  groups: unknown[];
-  guides: unknown[];
-}): Promise<string> {
-  return sha256Tagged(
-    canonicalJson({
-      schemaVersion: payload.schemaVersion,
-      site: payload.site,
-      sites: payload.sites,
-      groups: payload.groups,
-      guides: payload.guides,
-    }),
-  );
-}

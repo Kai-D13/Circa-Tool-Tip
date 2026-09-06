@@ -15,7 +15,7 @@ Ai chạy: **stakeholder**, bằng Supabase SQL Editor của project Tool-tip
 | 1 | `supabase/migrations/20260906_0001_auth_spine.sql` | Tạo `admin_allowlist`, `profiles`, `handle_new_user()`, `is_admin()`. Có **backfill** cho admin đã tồn tại trước migration. |
 | 2 | `supabase/migrations/20260906_0002_guide_schema_v5.sql` | Bảng + RLS + helper validate. |
 | 3 | `supabase/migrations/20260906_0003_guide_rpcs.sql` | RPC import/triage/CRUD. |
-| 4 | `supabase/migrations/20260906_0004_release_rpcs.sql` | RPC version/publish/rollback/get_release. |
+| 4 | `supabase/migrations/20260906_0004_release_rpcs.sql` | RPC publish/rollback/list/get_release. |
 | 5 | `supabase/tests/guide_rpc_test.sql` | **Tự rollback.** Phải in `ALL GUIDE RPC TESTS PASSED`. |
 | 6 | `supabase/seed/sites.sql` | Seed `pos` + `admin`. |
 

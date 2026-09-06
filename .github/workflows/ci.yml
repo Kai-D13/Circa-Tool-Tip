@@ -20,12 +20,7 @@ jobs:
       - name: Syntax gate
         run: node scripts/check-syntax.mjs
 
+      # Includes the importer tests, which run the real pipeline over a synthetic
+      # fixture: the production export contains customer data and is not in the repo.
       - name: Unit tests
-        run: node --test "packages/guide-schema/tests/*.test.mjs"
-
-      # The importer must stay reproducible: re-running it against the same source file
-      # has to produce a byte-identical artifact. This only runs when the source file is
-      # present, which it is not on CI, so it is a placeholder until a redacted fixture
-      # is committed.
-      - name: Importer reproducibility (skipped without source)
-        run: echo "TODO Batch 1B - commit a redacted fixture so this can run on CI"
+        run: node --test "packages/guide-schema/tests/*.test.mjs" "scripts/import-legacy/*.test.mjs"

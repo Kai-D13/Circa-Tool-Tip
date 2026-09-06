@@ -1,0 +1,106 @@
+{
+  "_type": "tooltip-guide-config",
+  "_version": 4,
+  "exportedAt": "2026-08-21T11:12:34.694Z",
+  "_note": "FIXTURE TỔNG HỢP. Không phải dữ liệu thật. Số điện thoại và UUID bên dưới là bịa, dùng để chứng minh scrubber hoạt động. An toàn để commit và chạy trên CI.",
+  "config": {
+    "targetDomain": "pos.v2.circa.vn",
+    "launcherText": "Hướng dẫn",
+    "accentColor": "#FB743E",
+    "menuTitle": "Chọn nội dung cần hướng dẫn",
+    "showLauncher": true,
+    "configUrl": "",
+    "autoSync": true,
+    "syncIntervalMin": 30,
+    "publishedBy": "",
+    "configVersion": 0,
+    "updatedAt": "",
+    "updatedBy": "",
+    "guides": [
+      {
+        "id": "fixaaaaaaaaa1",
+        "name": "FIXTURE URL ĐỘNG",
+        "startUrl": "/trang-chu",
+        "steps": [
+          {
+            "selector": "button.start",
+            "selectorCandidates": ["button.start"],
+            "matchText": "Bắt đầu",
+            "tag": "button",
+            "intent": "exact",
+            "title": "bat dau",
+            "content": "Bấm bắt đầu",
+            "position": "auto",
+            "urlPattern": "/trang-chu",
+            "navigationUrl": "/trang-chu",
+            "urlMatchMode": "path",
+            "action": { "type": "auto_click_wait_url", "expectedUrl": "", "timeoutMs": 0 }
+          },
+          {
+            "selector": "a.detail",
+            "selectorCandidates": ["a.detail"],
+            "matchText": "Chi tiết",
+            "tag": "a",
+            "intent": "exact",
+            "title": "chi tiet",
+            "content": "Mở chi tiết",
+            "position": "auto",
+            "urlPattern": "/sellback/create?id=98f7f76b-53e0-450c-8843-d557e8145f5a",
+            "navigationUrl": "/sellback/create?id=98f7f76b-53e0-450c-8843-d557e8145f5a",
+            "urlMatchMode": "path_query",
+            "action": { "type": "auto_click_wait_url", "expectedUrl": "", "timeoutMs": 0 }
+          },
+          {
+            "selector": "h1.title",
+            "selectorCandidates": ["h1.title"],
+            "matchText": "Phiếu bán lại",
+            "tag": "h1",
+            "intent": "exact",
+            "title": "xong",
+            "content": "Đã tới trang chi tiết",
+            "position": "auto",
+            "urlPattern": "/sellback/create?id=98f7f76b-53e0-450c-8843-d557e8145f5a",
+            "navigationUrl": "/sellback/create?id=98f7f76b-53e0-450c-8843-d557e8145f5a",
+            "urlMatchMode": "path_query",
+            "action": { "type": "highlight", "expectedUrl": "", "timeoutMs": 0 }
+          }
+        ]
+      },
+      {
+        "id": "fixbbbbbbbbb2",
+        "name": "FIXTURE PII VÀ QUERY CŨ",
+        "startUrl": "/dashboard?date_from_dashboard=2026-05-27T17%3A00%3A00Z",
+        "steps": [
+          {
+            "selector": "div:nth-of-type(3) > div:nth-of-type(1)",
+            "selectorCandidates": ["div:nth-of-type(3) > div:nth-of-type(1)"],
+            "matchText": "​",
+            "tag": "div",
+            "intent": "exact",
+            "title": "loc don",
+            "content": "Bộ lọc đơn hàng đã lưu",
+            "position": "auto",
+            "urlPattern": "/don-hang?filter=%7B%22status%22%3A%22ALL%22%2C%22customer_phone%22%3A%220900000000%22%2C%22dateRange%22%3A%5B%222026-05-01%22%2C%222026-05-31%22%5D%7D",
+            "navigationUrl": "/don-hang?filter=%7B%22status%22%3A%22ALL%22%2C%22customer_phone%22%3A%220900000000%22%2C%22dateRange%22%3A%5B%222026-05-01%22%2C%222026-05-31%22%5D%7D",
+            "urlMatchMode": "path_query",
+            "action": { "type": "auto_click_next", "expectedUrl": "", "timeoutMs": 0 }
+          },
+          {
+            "selector": "div > div:nth-of-type(9)",
+            "selectorCandidates": ["div > div:nth-of-type(9)", "form#f input[name='start']"],
+            "matchText": "Ngày bắt đầu",
+            "tag": "div",
+            "intent": "exact",
+            "title": "ngay bat dau",
+            "content": "Chọn ngày bắt đầu",
+            "position": "auto",
+            "urlPattern": "/don-hang?keyword=DIZZO&page=2",
+            "navigationUrl": "/don-hang?keyword=DIZZO&page=2",
+            "urlMatchMode": "path_query",
+            "action": { "type": "highlight", "expectedUrl": "", "timeoutMs": 0 }
+          }
+        ]
+      }
+    ]
+  }
+}

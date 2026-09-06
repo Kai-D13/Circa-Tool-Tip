@@ -55,6 +55,9 @@ Importer đọc file export v4 và ghi ra `data/legacy-import.v5.json` +
   `enum`, không `namespace`, không parameter property, không decorator.
 - **Draft step kế thừa site từ guide; release step bắt buộc có `site`.** Xem
   Plan v1.1 §P0-5.
+- **Bốn bảng, không hơn:** `sites`, `guides`, `releases`, `release_heads`. Không có
+  bảng version theo từng guide, không có bảng nhóm — nhóm là cột text. Đây là feature
+  nội bộ cho ~25 máy POS; thêm bảng là thêm chỗ sai.
 - **Flag không chặn publish.** Chúng nuôi repair queue và cảnh báo trên Portal; quyết
   định là của Admin (Plan v1.1 §P0-7).
 - **SQL trong `supabase/` chưa từng được chạy.** Máy dev không có Postgres; lần chạy đầu

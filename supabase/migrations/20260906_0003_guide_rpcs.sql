@@ -1,20 +1,13 @@
 -- =============================================================================
--- Circa Tool-tip · 0003 · Guide RPCs (import, triage, CRUD)
+-- Circa Tool-tip · 0003 · Guide RPC (import, triage, CRUD)
 --
--- These are what Batch 1B needs: import the 48 legacy guides as unassigned drafts and
--- let a human assign each one to POS or Admin. Release/publish RPCs are in 0004.
---
--- House rules, all inherited from the proven circa-consult RPCs:
+-- Quy ước chung, kế thừa từ bộ RPC đã chạy production của circa-consult:
 --   * language plpgsql, security definer, set search_path = public
---   * first statement is the is_admin() guard, raising errcode 42501
---   * jsonb type gates use `is distinct from` (jsonb_typeof(NULL) is SQL NULL, and
---     `NULL <> 'array'` is NULL, which IF treats as false)
---   * revoke from public, grant execute to the narrowest role that needs it
+--   * câu lệnh đầu tiên là guard is_admin(), raise errcode 42501
+--   * type gate jsonb dùng `is distinct from`
+--   * revoke from public, grant execute cho đúng role cần
 -- =============================================================================
 
--- -----------------------------------------------------------------------------
--- Shared guard. Kept as a function so the message and errcode never drift.
--- -----------------------------------------------------------------------------
 create or replace function public.require_admin()
 returns void
 language plpgsql
@@ -35,9 +28,9 @@ grant execute on function public.require_admin() to authenticated;
 -- =============================================================================
 -- admin_import_legacy
 --
--- Idempotent on legacy_id. A guide that a human has already triaged (status is no
--- longer 'unassigned') is SKIPPED, never overwritten: re-running the importer must not
--- be able to destroy triage work. Untouched drafts are refreshed.
+-- Idempotent theo legacy_id. Guide đã được người duyệt phân loại (status khác
+-- 'unassigned') thì BỎ QUA, không ghi đè: chạy lại importer không được phép xoá công
+-- sức triage.
 -- =============================================================================
 create or replace function public.admin_import_legacy(
   p_payload         jsonb,
@@ -50,19 +43,19 @@ security definer
 set search_path = public
 as $$
 declare
-  v_guide        jsonb;
-  v_legacy_id    text;
-  v_steps        jsonb;
-  v_step_count   integer;
-  v_shape_error  text;
-  v_existing_id  uuid;
-  v_status       public.guide_status;
-  v_inserted     integer := 0;
-  v_updated      integer := 0;
-  v_skipped      integer := 0;
-  v_total_steps  integer := 0;
-  v_guide_count  integer := 0;
-  v_email        text;
+  v_guide       jsonb;
+  v_legacy_id   text;
+  v_steps       jsonb;
+  v_step_count  integer;
+  v_shape_error text;
+  v_existing_id uuid;
+  v_status      public.guide_status;
+  v_inserted    integer := 0;
+  v_updated     integer := 0;
+  v_skipped     integer := 0;
+  v_total_steps integer := 0;
+  v_guide_count integer := 0;
+  v_email       text;
 begin
   perform public.require_admin();
 
@@ -74,6 +67,14 @@ begin
   end if;
   if jsonb_typeof(p_payload -> 'guides') is distinct from 'array' then
     raise exception 'payload.guides phải là mảng' using errcode = '22023';
+  end if;
+
+  -- Người gọi phải nói trước họ nghĩ mình đang import cái gì, và điều đó phải khớp với
+  -- checksum nhúng trong chính artifact. Nếu không, ta đang import một file khác.
+  if p_checksum is not null and length(trim(p_checksum)) > 0
+     and (p_payload ->> 'contentChecksum') is distinct from p_checksum then
+    raise exception 'contentChecksum không khớp: artifact ghi %, tham số truyền vào %',
+      coalesce(p_payload ->> 'contentChecksum', '(thiếu)'), p_checksum using errcode = '22023';
   end if;
 
   select lower(trim(email)) into v_email from auth.users where id = auth.uid();
@@ -101,13 +102,13 @@ begin
 
     if v_existing_id is null then
       insert into public.guides (
-        legacy_id, site_code, group_id, name, status, start_url, sort_order,
+        legacy_id, site_code, group_name, name, status, start_url, sort_order,
         draft_steps, step_count, validation, site_guess, site_evidence,
         created_by, created_by_email, updated_by, updated_by_email
       ) values (
         v_legacy_id,
-        null,                                   -- Plan v1.1 §P0-5: a human assigns this
-        null,
+        null,                                   -- Plan v1.1 §P0-5: người duyệt gán site
+        '',
         coalesce(nullif(trim(v_guide ->> 'name'), ''), 'Bộ không tên ' || v_legacy_id),
         'unassigned',
         coalesce(v_guide ->> 'startUrl', ''),
@@ -140,12 +141,11 @@ begin
       v_updated := v_updated + 1;
 
     else
-      -- Already triaged by a human. Leave it alone.
-      v_skipped := v_skipped + 1;
+      v_skipped := v_skipped + 1;   -- đã được người duyệt xử lý, không đụng vào
     end if;
   end loop;
 
-  -- Reconciliation: what the artifact claims must equal what we actually wrote.
+  -- Đối soát: artifact khai bao nhiêu thì phải ghi đúng bấy nhiêu.
   if (p_payload -> 'stats' ->> 'guides') is not null
      and (p_payload -> 'stats' ->> 'guides')::int is distinct from v_guide_count then
     raise exception 'Sai lệch số guide: payload nói %, xử lý %',
@@ -160,7 +160,7 @@ begin
   return jsonb_build_object(
     'ok', true,
     'sourceFilename', p_source_filename,
-    'checksum', p_checksum,
+    'contentChecksum', p_payload ->> 'contentChecksum',
     'guides', v_guide_count,
     'steps', v_total_steps,
     'inserted', v_inserted,
@@ -179,7 +179,7 @@ grant execute on function public.admin_import_legacy(jsonb, text, text) to authe
 -- =============================================================================
 create or replace function public.admin_list_guides(
   p_site   text default null,
-  p_group  uuid default null,
+  p_group  text default null,
   p_status text default null
 )
 returns jsonb
@@ -197,14 +197,12 @@ begin
   into v_rows
   from (
     select
-      g.id, g.legacy_id, g.site_code, g.group_id, g.name, g.status,
+      g.id, g.legacy_id, g.site_code, g.group_name, g.name, g.status,
       g.start_url, g.sort_order, g.step_count, g.validation,
-      g.site_guess, g.site_evidence, g.notes, g.updated_at,
-      gr.name as group_name
+      g.site_guess, g.site_evidence, g.notes, g.updated_at
     from public.guides g
-    left join public.guide_groups gr on gr.id = g.group_id
     where (p_site   is null or g.site_code = p_site)
-      and (p_group  is null or g.group_id = p_group)
+      and (p_group  is null or g.group_name = p_group)
       and (p_status is null or g.status = p_status::public.guide_status)
   ) t;
 
@@ -222,8 +220,8 @@ begin
 end;
 $$;
 
-revoke all on function public.admin_list_guides(text, uuid, text) from public;
-grant execute on function public.admin_list_guides(text, uuid, text) to authenticated;
+revoke all on function public.admin_list_guides(text, text, text) from public;
+grant execute on function public.admin_list_guides(text, text, text) to authenticated;
 
 -- =============================================================================
 -- admin_get_guide
@@ -236,8 +234,7 @@ security definer
 set search_path = public
 as $$
 declare
-  v_guide    jsonb;
-  v_versions jsonb;
+  v_guide jsonb;
 begin
   perform public.require_admin();
 
@@ -246,15 +243,11 @@ begin
     raise exception 'Không tìm thấy guide %', p_guide_id using errcode = 'P0002';
   end if;
 
-  select coalesce(jsonb_agg(jsonb_build_object(
-           'id', v.id, 'revision', v.revision, 'stepCount', v.step_count,
-           'siteCode', v.site_code, 'checksum', v.checksum, 'note', v.note,
-           'createdAt', v.created_at, 'createdByEmail', v.created_by_email
-         ) order by v.revision desc), '[]'::jsonb)
-  into v_versions
-  from public.guide_versions v where v.guide_id = p_guide_id;
-
-  return jsonb_build_object('ok', true, 'guide', v_guide, 'versions', v_versions);
+  return jsonb_build_object(
+    'ok', true,
+    'guide', v_guide,
+    'publishError', public.guide_publish_error(p_guide_id)
+  );
 end;
 $$;
 
@@ -262,13 +255,13 @@ revoke all on function public.admin_get_guide(uuid) from public;
 grant execute on function public.admin_get_guide(uuid) to authenticated;
 
 -- =============================================================================
--- admin_upsert_guide  (metadata only - steps go through admin_save_guide_steps)
+-- admin_upsert_guide  (metadata; step đi qua admin_save_guide_steps)
 -- =============================================================================
 create or replace function public.admin_upsert_guide(
   p_guide_id   uuid,
   p_name       text,
   p_site       text default null,
-  p_group_id   uuid default null,
+  p_group_name text default '',
   p_start_url  text default '',
   p_sort_order integer default 0,
   p_notes      text default null
@@ -279,40 +272,50 @@ security definer
 set search_path = public
 as $$
 declare
-  v_id    uuid;
-  v_email text;
+  v_id      uuid;
+  v_email   text;
+  v_status  public.guide_status;
+  v_current text;
 begin
   perform public.require_admin();
 
   if p_name is null or length(trim(p_name)) = 0 then
     raise exception 'Tên bộ không được rỗng' using errcode = '22023';
   end if;
-  if p_site is not null and not exists (select 1 from public.sites where code = p_site) then
-    raise exception 'Site % không tồn tại', p_site using errcode = '22023';
-  end if;
-  if p_group_id is not null and not exists (
-    select 1 from public.guide_groups where id = p_group_id and (p_site is null or site_code = p_site)
-  ) then
-    raise exception 'Nhóm không tồn tại hoặc không thuộc site %', p_site using errcode = '22023';
+  if p_site is not null and not exists (select 1 from public.sites where code = p_site and enabled) then
+    raise exception 'Site % không tồn tại hoặc đang tắt', p_site using errcode = '22023';
   end if;
 
   select lower(trim(email)) into v_email from auth.users where id = auth.uid();
 
   if p_guide_id is null then
     insert into public.guides (
-      name, site_code, group_id, start_url, sort_order, notes,
+      name, site_code, group_name, start_url, sort_order, notes,
       status, created_by, created_by_email, updated_by, updated_by_email
     ) values (
-      trim(p_name), p_site, p_group_id, coalesce(p_start_url, ''), coalesce(p_sort_order, 0), p_notes,
+      trim(p_name), p_site, coalesce(trim(p_group_name), ''), coalesce(p_start_url, ''),
+      coalesce(p_sort_order, 0), p_notes,
       case when p_site is null then 'unassigned' else 'draft' end,
       auth.uid(), v_email, auth.uid(), v_email
     )
     returning id into v_id;
   else
+    select status, site_code into v_status, v_current from public.guides where id = p_guide_id;
+    if not found then
+      raise exception 'Không tìm thấy guide %', p_guide_id using errcode = 'P0002';
+    end if;
+
+    -- Đổi site của một guide đang published sẽ khiến release hiện hành mô tả sai nơi
+    -- guide đó chạy. Bắt archive hoặc hạ về draft trước.
+    if v_status = 'published' and p_site is not null and p_site is distinct from v_current then
+      raise exception 'Không đổi được site của bộ đang published — hãy chuyển về draft trước'
+        using errcode = '22023';
+    end if;
+
     update public.guides set
       name       = trim(p_name),
       site_code  = coalesce(p_site, site_code),
-      group_id   = p_group_id,
+      group_name = coalesce(trim(p_group_name), group_name),
       start_url  = coalesce(p_start_url, start_url),
       sort_order = coalesce(p_sort_order, sort_order),
       notes      = p_notes,
@@ -321,31 +324,28 @@ begin
       updated_at = now()
     where id = p_guide_id
     returning id into v_id;
-
-    if v_id is null then
-      raise exception 'Không tìm thấy guide %', p_guide_id using errcode = 'P0002';
-    end if;
   end if;
 
   return jsonb_build_object('ok', true, 'guideId', v_id);
 end;
 $$;
 
-revoke all on function public.admin_upsert_guide(uuid, text, text, uuid, text, integer, text) from public;
-grant execute on function public.admin_upsert_guide(uuid, text, text, uuid, text, integer, text) to authenticated;
+revoke all on function public.admin_upsert_guide(uuid, text, text, text, text, integer, text) from public;
+grant execute on function public.admin_upsert_guide(uuid, text, text, text, text, integer, text) to authenticated;
 
 -- =============================================================================
 -- admin_save_guide_steps
 --
--- Optimistic concurrency: the caller passes the updated_at it last read. A stale write
--- is rejected with a clear message rather than silently clobbering another admin's
--- edit. Two people editing one guide is realistic here.
+-- Optimistic concurrency phải ATOMIC (audit P0-1). Bản trước SELECT rồi so sánh rồi
+-- UPDATE theo id — hai request đồng thời cùng vượt qua bước so sánh và request sau ghi
+-- đè request trước. Điều kiện updated_at nằm ngay trong mệnh đề WHERE của UPDATE, và
+-- kết quả được xác nhận bằng ROW_COUNT.
 -- =============================================================================
 create or replace function public.admin_save_guide_steps(
-  p_guide_id             uuid,
-  p_steps                jsonb,
-  p_validation           jsonb default '{}'::jsonb,
-  p_expected_updated_at  timestamptz default null
+  p_guide_id            uuid,
+  p_steps               jsonb,
+  p_validation          jsonb default '{}'::jsonb,
+  p_expected_updated_at timestamptz default null
 )
 returns jsonb
 language plpgsql
@@ -353,22 +353,13 @@ security definer
 set search_path = public
 as $$
 declare
-  v_current    timestamptz;
-  v_shape      text;
-  v_email      text;
-  v_new_time   timestamptz;
+  v_shape    text;
+  v_email    text;
+  v_new_time timestamptz;
+  v_rows     integer;
+  v_current  timestamptz;
 begin
   perform public.require_admin();
-
-  select updated_at into v_current from public.guides where id = p_guide_id;
-  if v_current is null then
-    raise exception 'Không tìm thấy guide %', p_guide_id using errcode = 'P0002';
-  end if;
-
-  if p_expected_updated_at is not null and v_current is distinct from p_expected_updated_at then
-    raise exception 'Bộ đã được người khác sửa lúc %. Hãy tải lại trước khi lưu.', v_current
-      using errcode = '40001';
-  end if;
 
   v_shape := public.guide_steps_shape_error(p_steps);
   if v_shape is not null then
@@ -385,7 +376,19 @@ begin
     updated_by_email = v_email,
     updated_at       = now()
   where id = p_guide_id
+    and (p_expected_updated_at is null or updated_at = p_expected_updated_at)
   returning updated_at into v_new_time;
+
+  get diagnostics v_rows = row_count;
+
+  if v_rows = 0 then
+    select updated_at into v_current from public.guides where id = p_guide_id;
+    if v_current is null then
+      raise exception 'Không tìm thấy guide %', p_guide_id using errcode = 'P0002';
+    end if;
+    raise exception 'Bộ đã được người khác sửa lúc %. Hãy tải lại trước khi lưu.', v_current
+      using errcode = '40001';
+  end if;
 
   return jsonb_build_object(
     'ok', true, 'guideId', p_guide_id,
@@ -399,12 +402,12 @@ revoke all on function public.admin_save_guide_steps(uuid, jsonb, jsonb, timesta
 grant execute on function public.admin_save_guide_steps(uuid, jsonb, jsonb, timestamptz) to authenticated;
 
 -- =============================================================================
--- admin_assign_guide_site  -- the triage screen's single narrow call
+-- admin_assign_guide_site  — một lời gọi hẹp cho màn triage
 -- =============================================================================
 create or replace function public.admin_assign_guide_site(
-  p_guide_id uuid,
-  p_site     text,
-  p_group_id uuid default null
+  p_guide_id   uuid,
+  p_site       text,
+  p_group_name text default ''
 )
 returns jsonb
 language plpgsql
@@ -420,24 +423,23 @@ begin
   if not exists (select 1 from public.sites where code = p_site and enabled) then
     raise exception 'Site % không tồn tại hoặc đang tắt', p_site using errcode = '22023';
   end if;
-  if p_group_id is not null and not exists (
-    select 1 from public.guide_groups where id = p_group_id and site_code = p_site
-  ) then
-    raise exception 'Nhóm không thuộc site %', p_site using errcode = '22023';
-  end if;
 
   select status into v_status from public.guides where id = p_guide_id;
   if v_status is null then
     raise exception 'Không tìm thấy guide %', p_guide_id using errcode = 'P0002';
   end if;
+  if v_status = 'published' then
+    raise exception 'Không đổi được site của bộ đang published — hãy chuyển về draft trước'
+      using errcode = '22023';
+  end if;
 
   select lower(trim(email)) into v_email from auth.users where id = auth.uid();
 
   update public.guides set
-    site_code = p_site,
-    group_id  = p_group_id,
-    -- Assigning a site is what promotes an imported guide out of triage.
-    status    = case when status = 'unassigned' then 'draft'::public.guide_status else status end,
+    site_code  = p_site,
+    group_name = coalesce(trim(p_group_name), ''),
+    -- Gán site chính là thứ đưa guide ra khỏi hàng chờ phân loại.
+    status     = case when status = 'unassigned' then 'draft'::public.guide_status else status end,
     updated_by = auth.uid(),
     updated_by_email = v_email,
     updated_at = now()
@@ -452,8 +454,8 @@ begin
 end;
 $$;
 
-revoke all on function public.admin_assign_guide_site(uuid, text, uuid) from public;
-grant execute on function public.admin_assign_guide_site(uuid, text, uuid) to authenticated;
+revoke all on function public.admin_assign_guide_site(uuid, text, text) from public;
+grant execute on function public.admin_assign_guide_site(uuid, text, text) to authenticated;
 
 -- =============================================================================
 -- admin_set_guide_status
@@ -465,7 +467,7 @@ security definer
 set search_path = public
 as $$
 declare
-  v_site  text;
+  v_error text;
   v_email text;
 begin
   perform public.require_admin();
@@ -474,12 +476,17 @@ begin
     raise exception 'Trạng thái % không hợp lệ', p_status using errcode = '22023';
   end if;
 
-  select site_code into v_site from public.guides where id = p_guide_id;
-  if not found then
+  if not exists (select 1 from public.guides where id = p_guide_id) then
     raise exception 'Không tìm thấy guide %', p_guide_id using errcode = 'P0002';
   end if;
-  if p_status <> 'unassigned' and v_site is null then
-    raise exception 'Phải gán site trước khi chuyển sang trạng thái %', p_status using errcode = '22023';
+
+  -- Đánh dấu published nghĩa là "cho vào release lần tới", nên kiểm tra ngay tại đây
+  -- thay vì để publish cả site đổ vỡ sau (audit P0-3).
+  if p_status = 'published' then
+    v_error := public.guide_publish_error(p_guide_id);
+    if v_error is not null then
+      raise exception 'Chưa thể publish — %', v_error using errcode = '22023';
+    end if;
   end if;
 
   select lower(trim(email)) into v_email from auth.users where id = auth.uid();
@@ -497,7 +504,7 @@ revoke all on function public.admin_set_guide_status(uuid, text) from public;
 grant execute on function public.admin_set_guide_status(uuid, text) to authenticated;
 
 -- =============================================================================
--- admin_delete_guide  -- refuses while the guide is published
+-- admin_delete_guide  — từ chối khi đang published
 -- =============================================================================
 create or replace function public.admin_delete_guide(p_guide_id uuid)
 returns jsonb
@@ -526,50 +533,3 @@ $$;
 
 revoke all on function public.admin_delete_guide(uuid) from public;
 grant execute on function public.admin_delete_guide(uuid) to authenticated;
-
--- =============================================================================
--- admin_upsert_group
--- =============================================================================
-create or replace function public.admin_upsert_group(
-  p_group_id   uuid,
-  p_site       text,
-  p_name       text,
-  p_sort_order integer default 0
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_id uuid;
-begin
-  perform public.require_admin();
-
-  if not exists (select 1 from public.sites where code = p_site) then
-    raise exception 'Site % không tồn tại', p_site using errcode = '22023';
-  end if;
-  if p_name is null or length(trim(p_name)) = 0 then
-    raise exception 'Tên nhóm không được rỗng' using errcode = '22023';
-  end if;
-
-  if p_group_id is null then
-    insert into public.guide_groups (site_code, name, sort_order)
-    values (p_site, trim(p_name), coalesce(p_sort_order, 0))
-    returning id into v_id;
-  else
-    update public.guide_groups
-    set name = trim(p_name), sort_order = coalesce(p_sort_order, sort_order)
-    where id = p_group_id
-    returning id into v_id;
-    if v_id is null then
-      raise exception 'Không tìm thấy nhóm %', p_group_id using errcode = 'P0002';
-    end if;
-  end if;
-
-  return jsonb_build_object('ok', true, 'groupId', v_id);
-end;
-$$;
-
-revoke all on function public.admin_upsert_group(uuid, text, text, integer) from public;
-grant execute on function public.admin_upsert_group(uuid, text, text, integer) to authenticated;

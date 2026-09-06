@@ -1,16 +1,24 @@
 # IMPORT REPORT — legacy v4 -> v5
 
-Sinh bởi `scripts/import-legacy/cli.mjs`. Batch 1A, chưa ghi vào Supabase.
+Sinh bởi `scripts/import-legacy/cli.mjs`. Chưa ghi gì vào Supabase.
+
+Báo cáo này KHÔNG chứa thời điểm chạy: chạy lại importer trên cùng file nguồn phải
+cho ra file y hệt, nếu không thì worktree bẩn sau mỗi lần chạy.
 
 | | |
 |---|---|
-| Thời điểm chạy | 2026-09-06T07:36:55.472Z |
 | File nguồn | `C:/Users/Administrator/Downloads/tooltip-guide-pos.v2.circa.vn (1) (1).json` |
-| Kích thước | 378029 bytes |
-| SHA256 | `8d791365a0b7dda183727ebf64f9148ef76fc2459d3c57d2a8d4d3a09ad7fb3e` |
+| Kích thước nguồn | 378029 bytes |
+| `sourceFileSha256` | `8d791365a0b7dda183727ebf64f9148ef76fc2459d3c57d2a8d4d3a09ad7fb3e` |
 | exportedAt | 2026-08-21T11:12:34.694Z |
 | targetDomain gốc | pos.v2.circa.vn |
-| Checksum artifact | `sha256:4f7d495f18d3ecc716506882c742adfe0c4ab60574f0f08b69eb8369add552ef` |
+| `contentChecksum` | `sha256:b96b5ef5aa6086809b3c4a3ac6dea93bea6a1047a4d697244e777e584b3156ce` |
+
+Ba loại checksum, đừng dùng lẫn:
+
+- **`sourceFileSha256`** — SHA-256 của file export v4 gốc.
+- **`contentChecksum`** — SHA-256 của phần nội dung artifact (không gồm chính nó). Đây là thứ nhúng trong `data/legacy-import.v5.json` và truyền cho `admin_import_legacy`.
+- **`artifactFileSha256`** — SHA-256 của cả file artifact trên đĩa. Không nhúng vào file (không thể tự chứa hash của chính mình); tính bằng `sha256sum data/legacy-import.v5.json` khi cần đối soát.
 
 ## 1. Đối soát số lượng
 
@@ -89,6 +97,9 @@ Matcher v5 neo wildcard vào đầu path (v4 không neo). Đây là toàn bộ p
 | `/tra-hang/*` | 4 |
 | `/danh-sach-lieu-thuoc/*` | 4 |
 | `/quan-ly-cua-hang/*` | 4 |
+| `/sellback/create*` | 2 |
+| `/sellback/eligible*` | 2 |
+| `/sellback/new*` | 2 |
 | `/circa/sellback/*` | 2 |
 | `/tra-hang-ban/*` | 1 |
 | `/quan-ly-combo/*` | 1 |
@@ -158,7 +169,7 @@ Matcher v5 neo wildcard vào đầu path (v4 không neo). Đây là toàn bộ p
 - **BÁN HÀNG TẠI QUẦY** — gợi ý `pos` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 14 / Admin 0 / trung tính 0. Prefix: `ban-hang`×9, `trang-chu`×5
 - **TRẢ HÀNG BÁN** — gợi ý `pos` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 12 / Admin 0 / trung tính 0. Prefix: `trang-chu`×5, `tra-hang`×4, `ban-hang-offline`×2, `ban-hang`×1
 - **THEO DÕI ĐƠN CHỜ HÀNG ONLINE** — gợi ý `pos` (medium). Toàn bộ prefix nghiệp vụ thuộc một site, nhưng URL bắt đầu là route trung tính. POS 4 / Admin 0 / trung tính 5. Prefix: `dashboard`×5, `ban-hang-online`×4
-- **PHIẾU BÁN LẠI- POS** — gợi ý `pos` (medium). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. Phần lớn route là trung tính nên bằng chứng yếu. POS 5 / Admin 0 / trung tính 16. Prefix: `sellback`×16, `trang-chu`×5
+- **PHIẾU BÁN LẠI- POS** — gợi ý `pos` (medium). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. Phần lớn route là trung tính nên bằng chứng yếu. POS 5 / Admin 0 / trung tính 14. Prefix: `sellback`×14, `trang-chu`×5
 - **NHẬP ĐƠN HÀNG TỪ NCC** — gợi ý `pos` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 11 / Admin 0 / trung tính 0. Prefix: `danh-sach-phieu-nhan-hang`×6, `trang-chu`×5
 - **IN TEM SẢN PHẨM** — gợi ý `không rõ` (none). Không có prefix nào thuộc từ điển POS/Admin — toàn route trung tính. POS 0 / Admin 0 / trung tính 17. Prefix: `danh-sach-ton-kho`×12, `dashboard`×5
 - **TẠO PHIẾU LUÂN CHUYỂN HÀNG NỘI BỘ** — gợi ý `pos` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 17 / Admin 0 / trung tính 0. Prefix: `chuyen-hang`×12, `trang-chu`×5
@@ -171,7 +182,7 @@ Matcher v5 neo wildcard vào đầu path (v4 không neo). Đây là toàn bộ p
 - **DASHBOARD TỔNG HỢP** — gợi ý `admin` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 0 / Admin 15 / trung tính 0. Prefix: `dashboard-tong-hop`×12, `tai-khoan`×3
 - **QUẢN LÝ BÁN HÀNG- ĐƠN HÀNG** — gợi ý `admin` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 0 / Admin 19 / trung tính 0. Prefix: `don-hang`×14, `tai-khoan`×5
 - **QUẢN LÝ BÁN HÀNG- TRẢ HÀNG BÁN** — gợi ý `admin` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 0 / Admin 10 / trung tính 0. Prefix: `tai-khoan`×5, `tra-hang-ban`×5
-- **TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN** — gợi ý `admin` (medium). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. Phần lớn route là trung tính nên bằng chứng yếu. POS 0 / Admin 5 / trung tính 16. Prefix: `sellback`×16, `tai-khoan`×5
+- **TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN** — gợi ý `admin` (medium). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. Phần lớn route là trung tính nên bằng chứng yếu. POS 0 / Admin 5 / trung tính 12. Prefix: `sellback`×12, `tai-khoan`×5
 - **DUYỆT PHIẾU BÁN LẠI** — gợi ý `admin` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 0 / Admin 11 / trung tính 0. Prefix: `circa`×6, `tai-khoan`×5
 - **THAO TÁC THÊM SẢN PHẨM** — gợi ý `admin` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 0 / Admin 31 / trung tính 0. Prefix: `quan-ly-san-pham-pos`×26, `tai-khoan`×5
 - **THAO TÁC CHỈNH ĐƠN VỊ** — gợi ý `admin` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 0 / Admin 17 / trung tính 0. Prefix: `quan-ly-san-pham-pos`×12, `tai-khoan`×5
@@ -204,7 +215,35 @@ Matcher v5 neo wildcard vào đầu path (v4 không neo). Đây là toàn bộ p
 - **QUẢN LÝ VAT** — gợi ý `admin` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 0 / Admin 11 / trung tính 0. Prefix: `danh-sach-vat`×6, `tai-khoan`×5
 - **PHÂN QUYỀN CHO NHÂN VIÊN VÀO POS CỬA HÀNG** — gợi ý `admin` (high). Toàn bộ prefix nghiệp vụ và cả URL bắt đầu đều thuộc một site. POS 0 / Admin 11 / trung tính 0. Prefix: `quan-ly-cua-hang`×6, `tai-khoan`×5
 
-## 9. Acceptance Batch 1A
+## 9. Sáu bước URL động sau khi sửa
+
+Record id trong query không bị xoá trắng — làm vậy sẽ để lại URL chết. URL được nới
+thành wildcard, và `navigationUrl` bị bỏ trống vì các trang này chỉ tới được bằng cách
+click qua bước trước.
+
+| Guide | Bước | urlPattern | navigationUrl | action | Bước trước |
+|---|---:|---|---|---|---|
+| PHIẾU BÁN LẠI- POS | 9 | `/sellback/create*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
+| PHIẾU BÁN LẠI- POS | 10 | `/sellback/create*` | *(trống)* | `highlight` | `auto_click_wait_url` |
+| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 7 | `/sellback/eligible*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
+| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 8 | `/sellback/eligible*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
+| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 9 | `/sellback/new*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
+| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 10 | `/sellback/new*` | *(trống)* | `highlight` | `auto_click_wait_url` |
+
+## 10. Bốn cảnh báo selector quá rộng
+
+Stakeholder duyệt hạ từ error xuống warning, **kèm điều kiện**: cả bốn vào repair/QA
+queue bắt buộc, và runtime chỉ auto-click khi text match là exact + unique + element
+actionable — không có fallback kiểu 'lấy candidate đầu tiên' cho selector rộng.
+
+| Guide | Bước | Selector chính | Số candidate | matchText | action |
+|---|---:|---|---:|---|---|
+| TẠO VOUCHER GIẢM GIÁ | 8 | `div > div:nth-of-type(9)` | 2 | Ngày bắt đầu | `auto_click_wait_url` |
+| TẠO VOUCHER GIẢM GIÁ | 9 | `div > div:nth-of-type(10)` | 2 | Ngày kết thúc | `auto_click_wait_url` |
+| BƯỚC 1-  Tạo voucher giảm giá kiểu “Hệ thống tạo sau” | 8 | `div > div:nth-of-type(9)` | 2 | Ngày bắt đầu | `auto_click_wait_url` |
+| BƯỚC 2- Tạo voucher quà tặng (hệ thống tạo sau) | 1 | `div > div:nth-of-type(1)` | 1 | Công cụ Marketing | `auto_click_wait_url` |
+
+## 11. Acceptance Batch 1A
 
 | Tiêu chí | Kết quả |
 |---|---|

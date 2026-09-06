@@ -89,7 +89,8 @@ export interface DraftGuide {
   name: string;
   /** null while the guide is still unassigned. */
   siteCode: SiteCode | null;
-  groupId?: string | null;
+  /** Plain label used to group guides in the menu. No separate table. */
+  groupName?: string | null;
   status: GuideStatus;
   startUrl: string;
   sortOrder?: number;
@@ -110,17 +111,11 @@ export interface ReleaseGuide {
   legacyId: string | null;
   name: string;
   site: SiteCode;
-  groupId: string | null;
+  /** Menu grouping label, or null for "ungrouped". */
+  group: string | null;
   sortOrder: number;
-  guideRevision: number;
   start: ReleaseGuideStart;
   steps: ReleaseStep[];
-}
-
-export interface ReleaseGroup {
-  id: string;
-  name: string;
-  sortOrder: number;
 }
 
 export interface ReleasePayload {
@@ -131,7 +126,8 @@ export interface ReleasePayload {
   checksum: string;
   /** site code -> origin, e.g. { pos: "https://pos.v2.circa.vn" } */
   sites: Record<SiteCode, string>;
-  groups: ReleaseGroup[];
+  /** Distinct group labels present in this release, in menu order. */
+  groups: string[];
   guides: ReleaseGuide[];
 }
 

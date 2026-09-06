@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.1 |
+| **Version** | 1.1 (+ sửa theo audit Batch 1A) |
 | **Ngày** | 2026-09-06 |
 | **Thay thế** | Plan v1.0 (Conditional Approval — 7 P0 + 5 P1) |
 | **Trạng thái** | Đã áp dụng toàn bộ correction P0/P1 của stakeholder audit |
@@ -231,8 +231,8 @@ type ReleaseStep = Omit<DraftStep, 'siteOverride' | 'flags'> & { site: SiteCode 
   "releasedAt": "2026-09-06T09:12:44.117Z",
   "checksum": "sha256:…",          // canonical JSON của groups + guides
   "sites": { "pos": "https://pos.v2.circa.vn", "admin": "https://admin.v2.circa.vn" },
-  "groups": [ { "id": "…", "name": "Bán hàng", "sortOrder": 1 } ],
-  "guides": [ { "id","legacyId","name","site","groupId","sortOrder","guideRevision",
+  "groups": [ "Bán hàng", "Kho hàng" ],
+  "guides": [ { "id","legacyId","name","site","group","sortOrder",
                 "start": { "site","url" }, "steps": [ /* ReleaseStep */ ] } ]
 }
 ```
@@ -245,56 +245,86 @@ Kích thước: mảng guide legacy thô 255 KB → hai release ~500 KB trong `c
 
 ---
 
-## 3. Supabase DDL (tóm tắt — chi tiết trong `supabase/migrations/`)
+## 3. Supabase DDL — bốn bảng
 
-* `sites(code PK, label, origin UNIQUE, sort_order)` — seed `pos`, `admin`.
-* `guide_groups(id, site_code FK, name, sort_order, UNIQUE(site_code,name))`
-* `guides(id, legacy_id UNIQUE, site_code FK NULL, group_id FK NULL, name, status, start_url, sort_order, draft_steps jsonb, step_count, validation jsonb, site_guess, site_evidence jsonb, notes, audit cols)`
+Đây là feature nội bộ hiển thị hướng dẫn cho ~25 máy POS. Bản đầu có 6 bảng và 13 RPC;
+audit Batch 1A chỉ ra rằng phần thừa chính là nguồn sinh lỗi, nên đã cắt:
+
+* **Bỏ `guide_versions`.** Lịch sử cần thiết là lịch sử *release* — thứ nhân viên thực
+  sự nhận — chứ không phải version của từng guide. Bỏ nó cũng xoá luôn lỗi "payload
+  chứa draft mới nhưng ghi `guideRevision` cũ".
+* **Bỏ `guide_groups`.** Nhóm chỉ là nhãn gom menu → một cột `group_name text`.
+
+Còn lại:
+
+* `sites(code PK, label, origin UNIQUE, sort_order, enabled)` — seed `pos`, `admin`.
+* `guides(id, legacy_id UNIQUE, site_code FK NULL, group_name text, name, status,
+  start_url, sort_order, draft_steps jsonb, step_count, validation jsonb, site_guess,
+  site_evidence jsonb, notes, audit cols)`
   * `status`: `unassigned | draft | published | archived`
-  * CHECK `status = 'unassigned' OR site_code IS NOT NULL` — tiêu chí "48/48 phải có site trước publish" nằm ở database
-* `guide_versions(id, guide_id FK, revision, steps jsonb, step_count, site_code, checksum, note, UNIQUE(guide_id,revision))` — immutable
-* `releases(id, site_code FK, revision bigint, payload jsonb, checksum, guide_count, step_count, rolled_back_from FK NULL, note, audit cols, UNIQUE(site_code,revision))` — **immutable, không có cột status** (P0-4)
-* `release_heads(site_code PK, release_id FK, revision, checksum, guide_count, step_count, released_at)` — 1 dòng/site
+  * CHECK `status = 'unassigned' OR site_code IS NOT NULL` — tiêu chí "48/48 phải có
+    site trước publish" nằm ở database
+* `releases(id, site_code FK, revision bigint, payload jsonb, checksum, guide_count,
+  step_count, rolled_back_from FK NULL, note, audit cols, UNIQUE(site_code, revision))`
+  — **immutable, không có cột status**
+* `release_heads(site_code PK, release_id FK, revision, checksum, guide_count,
+  step_count, released_at)` — 1 dòng/site
 
-**RLS:** bật trên mọi bảng. Chỉ có policy **SELECT**:
-* `sites`, `guide_groups`, `guides`, `guide_versions` → `authenticated` + `is_admin()`
-* `releases`, `release_heads` → **`anon, authenticated`, `using (true)`** — đây là data plane của extension
-* **Không có policy INSERT/UPDATE/DELETE trên bất kỳ bảng nào.** Mọi thay đổi đi qua RPC `security definer` mở đầu bằng `is_admin()` guard.
+Hai helper: `guide_steps_shape_error(jsonb)` kiểm hình dạng mảng step, và
+`guide_publish_error(uuid)` trả về lý do đầu tiên khiến một guide chưa thể vào release.
 
----
+**RLS:** bật trên mọi bảng, chỉ có policy **SELECT**:
+* `sites`, `guides` → `authenticated` + `is_admin()`
+* `releases`, `release_heads` → **`anon, authenticated`, `using (true)`** — data plane
+  của extension
+* **Không có policy INSERT/UPDATE/DELETE.** Mọi thay đổi đi qua RPC `security definer`
+  mở đầu bằng `is_admin()` guard.
 
 ## 4. RPC
 
 | # | Signature | Grant |
 |---|---|---|
-| 1 | `admin_list_guides(p_site, p_group, p_status) → jsonb` | authenticated |
-| 2 | `admin_get_guide(p_guide_id) → jsonb` | authenticated |
-| 3 | `admin_upsert_guide(...) → jsonb` | authenticated |
-| 4 | `admin_save_guide_steps(p_guide_id, p_steps, p_validation, p_expected_updated_at) → jsonb` | authenticated |
-| 5 | `admin_assign_guide_site(p_guide_id, p_site, p_group_id) → jsonb` | authenticated |
-| 6 | `admin_set_guide_status(p_guide_id, p_status) → jsonb` | authenticated |
-| 7 | `admin_delete_guide(p_guide_id) → jsonb` (từ chối khi `published`) | authenticated |
-| 8 | `admin_create_guide_version(p_guide_id, p_note) → jsonb` | authenticated |
+| 1 | `admin_import_legacy(p_payload, p_source_filename, p_checksum) → jsonb` | authenticated |
+| 2 | `admin_list_guides(p_site, p_group, p_status) → jsonb` | authenticated |
+| 3 | `admin_get_guide(p_guide_id) → jsonb` | authenticated |
+| 4 | `admin_upsert_guide(...) → jsonb` | authenticated |
+| 5 | `admin_save_guide_steps(p_guide_id, p_steps, p_validation, p_expected_updated_at) → jsonb` | authenticated |
+| 6 | `admin_assign_guide_site(p_guide_id, p_site, p_group_name) → jsonb` | authenticated |
+| 7 | `admin_set_guide_status(p_guide_id, p_status) → jsonb` | authenticated |
+| 8 | `admin_delete_guide(p_guide_id) → jsonb` | authenticated |
 | 9 | `admin_publish_site(p_site, p_note) → jsonb` | authenticated |
-| 10 | `admin_list_releases(p_site) → jsonb` | authenticated |
-| 11 | `admin_rollback_site(p_site, p_release_id) → jsonb` | authenticated |
-| 12 | `admin_import_legacy(p_payload, p_source_filename, p_checksum) → jsonb` (idempotent theo `legacy_id`) | authenticated |
-| 13 | `get_release(p_site) → jsonb` | **anon, authenticated** |
+| 10 | `admin_rollback_site(p_site, p_release_id) → jsonb` | authenticated |
+| 11 | `admin_list_releases(p_site) → jsonb` | authenticated |
+| 12 | `get_release(p_site) → jsonb` | **anon, authenticated** |
 
-Chuẩn bắt buộc: `language plpgsql security definer set search_path = public`, mở đầu `if not public.is_admin() then raise exception ... using errcode = '42501'` (trừ #13), dùng `is distinct from` cho mọi type gate jsonb (vì `jsonb_typeof(NULL)` là SQL NULL và `IF` coi NULL là false), kết thúc `revoke all ... from public; grant execute ... to <role>`.
+Chuẩn bắt buộc: `language plpgsql security definer set search_path = public`, mở đầu
+`if not public.is_admin() then raise ... errcode '42501'` (trừ #12), dùng
+`is distinct from` cho mọi type gate jsonb, kết thúc `revoke all ... from public;
+grant execute ... to <role>`.
 
-`admin_publish_site` (v1.1 — đã gỡ PII backstop và auto-click hard-block):
+**`admin_save_guide_steps` phải atomic.** Điều kiện `updated_at` nằm trong chính mệnh đề
+`WHERE` của `UPDATE` và kết quả xác nhận bằng `ROW_COUNT`. Kiểu SELECT-rồi-so-sánh-rồi-
+UPDATE để hai request đồng thời cùng vượt qua và request sau ghi đè request trước.
+
+**`admin_publish_site`:**
 1. `is_admin()`.
-2. Mọi guide `published` của site có `site_code = p_site`, `group_id` (nếu có) thuộc đúng site.
-3. Pin từng guide vào `guide_versions` mới nhất; tự tạo version nếu `draft_steps` đã trôi.
-4. Materialize `step.site` cho toàn bộ step (P0-5).
-5. Build payload, tính checksum, insert `releases` với `revision = coalesce(max,0)+1`.
-6. **Reconciliation**: `jsonb_array_length(payload->'guides')` phải bằng số guide đếm được và tổng step phải bằng `step_count`, sai thì `raise` và abort.
+2. `pg_advisory_xact_lock` theo site — hai lần publish đồng thời xếp hàng thay vì đua
+   nhau đọc `max(revision)`.
+3. Với mọi guide `published` của site: `guide_publish_error()` phải null — guide có
+   bước, hình dạng step hợp lệ, `siteOverride` (nếu có) tồn tại và đang bật, không còn
+   `validation.errors`. Đây là kiểm tra **tính hợp lệ dữ liệu**, không phải guard
+   nghiệp vụ: một guide hỏng làm cả site mất hướng dẫn vì extension từ chối nguyên
+   payload.
+4. Materialize `step.site` cho toàn bộ step.
+5. Build payload, checksum, insert `releases` với `revision = coalesce(max,0)+1`.
+6. Đối soát số guide/step trong payload, sai thì `raise` và abort.
 7. Upsert `release_heads`.
 
-`admin_rollback_site`: đọc payload của release cũ → insert **release mới revision cao hơn** với `rolled_back_from` → upsert head. Không bao giờ giảm revision.
+`admin_rollback_site`: copy payload cũ sang **release mới revision cao hơn**, ghi
+`rolled_back_from`. Không bao giờ giảm revision.
 
----
+Vì release được build thẳng từ `draft_steps` trong cùng một câu lệnh sinh ra số
+revision, không tồn tại khe hở để payload mang nội dung mới nhưng số version cũ.
 
 ## 5. Sync
 
@@ -427,3 +457,32 @@ Replay draft 48 guide (pha 1 dry-run) · repair step lỗi · stakeholder duyệ
 2. Hostname production của Portal — chốt trước khi build Web Store release.
 3. Sidebar Admin có chế độ collapse thật không, bật bằng cách nào.
 4. Danh sách guide được duyệt chạy full auto-click ở QA pha 2 — chốt sau khi có báo cáo pha 1.
+
+---
+
+## 12. Sửa theo audit Batch 1A
+
+| # | Audit nói | Đã làm |
+|---|---|---|
+| P0-1 | Optimistic concurrency chưa atomic: SELECT → so sánh → UPDATE theo id | Điều kiện `updated_at` đưa vào chính `WHERE` của `UPDATE`, xác nhận bằng `ROW_COUNT`. Test: stale bị chặn (40001), lưu đúng timestamp thành công, timestamp đã dùng rồi vẫn bị chặn, guide không tồn tại báo P0002 |
+| P0-2 | Release có thể mang content mới nhưng `guideRevision` cũ | **Bỏ hẳn bảng `guide_versions`.** Release build thẳng từ `draft_steps` trong cùng câu lệnh sinh revision → không còn khe hở. Test: sửa draft rồi publish lại phải thấy nội dung mới ở revision mới |
+| P0-3 | Publish cho phép tạo release mà extension chắc chắn từ chối | `guide_publish_error()` kiểm: có bước, hình dạng step hợp lệ, `siteOverride` tồn tại và đang bật, không còn `validation.errors`. Gọi ở cả `admin_set_guide_status('published')` lẫn `admin_publish_site`. Test 3 trường hợp hỏng |
+| P0-4 | Scrub UUID làm mất navigation context | Query có record id → URL nới thành `/duong-dan*` thay vì xoá param; `navigationUrl` để trống vì các trang đó chỉ tới được bằng click qua bước trước; `expectedUrl` tự thành wildcard theo bước kế tiếp. 8 test, gồm cả 6 step thật |
+| P1 | Checksum lẫn lộn | Ba tên riêng: `sourceFileSha256`, `contentChecksum`, `artifactFileSha256`. Bỏ `releaseChecksum()` phía JS — checksum release chỉ tính ở SQL |
+| P1 | `expect_reject` bắt mọi exception | Nhận thêm SQLSTATE mong đợi và so khớp |
+| P1 | Validate group theo effective site | Không còn vấn đề: nhóm là cột text, không phải bảng có FK |
+| P1 | `admin_upsert_group` xác minh site | RPC đã bị xoá cùng bảng |
+| P1 | Đổi site của guide published | Bị từ chối ở cả `admin_upsert_guide` lẫn `admin_assign_guide_site` |
+| P1 | Race `max(revision)+1` | `pg_advisory_xact_lock` theo site trong publish và rollback |
+| P1 | Import phải kiểm checksum | So `p_checksum` với `contentChecksum` nhúng trong artifact |
+| P1 | Report làm bẩn worktree | Bỏ timestamp khỏi báo cáo — chạy lại cho ra file y hệt |
+| P1 | CI chỉ có placeholder | Fixture tổng hợp `scripts/import-legacy/fixtures/legacy-sample.v4.json` + 18 test chạy trên CI |
+
+**Còn nợ sang Batch 3 (code extension, chưa viết):** revision `0` phải được coi là "chưa
+có release" chứ không đưa qua validator; publishable key gửi ở header `apikey`, không
+dùng như JWT trong `Authorization: Bearer`.
+
+**Quyết định về 4 selector rộng:** stakeholder duyệt hạ xuống warning **kèm điều kiện** —
+cả bốn vào repair/QA queue bắt buộc, và runtime chỉ auto-click khi text match là exact +
+unique + element actionable, không có fallback "lấy candidate đầu tiên" cho selector
+rộng. Ràng buộc này áp dụng khi viết resolver ở Batch 3.

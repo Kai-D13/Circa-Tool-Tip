@@ -101,12 +101,22 @@ function isVacuous(value) {
 }
 
 /**
- * Scrub one URL (path + query + hash). Returns the cleaned URL and the flags earned.
+ * Scrub one URL (path + query + hash). Returns the cleaned URL, the flags earned, and
+ * whether the URL turned into a wildcard.
+ *
+ * A record id in the query is NOT simply deleted. `/sellback/create?id=<uuid>` without
+ * its id is a broken page, so deleting the param would leave a navigationUrl that
+ * cannot load. Instead the URL becomes `/sellback/create*`:
+ *   - as a urlPattern it matches whatever id the user's own flow produced;
+ *   - as a navigationUrl it is unusable by definition, so the caller clears it - those
+ *     pages are only ever reached by clicking through the previous step.
+ * All six affected legacy steps are reached from an auto_click_wait_url, so the wait
+ * target (materialised from the next step's pattern) becomes the same wildcard.
  */
 export function scrubUrl(url) {
   const flags = new Set();
   const original = String(url ?? "");
-  if (!original) return { url: original, flags: [] };
+  if (!original) return { url: original, flags: [], dynamic: false };
 
   const hashIdx = original.indexOf("#");
   const hash = hashIdx >= 0 ? original.slice(hashIdx) : "";
@@ -115,13 +125,21 @@ export function scrubUrl(url) {
   const path = qIdx >= 0 ? noHash.slice(0, qIdx) : noHash;
   const query = qIdx >= 0 ? noHash.slice(qIdx + 1) : "";
 
-  if (!query) {
-    // A UUID can also sit in the path itself.
-    if (UUID_ANYWHERE_RE.test(path)) {
+  // A UUID in the path itself becomes a wildcard segment.
+  if (UUID_ANYWHERE_RE.test(path)) {
+    flags.add(SCRUB_FLAGS.UUID);
+    return { url: path.replace(UUID_ANYWHERE_RE, "*") + hash, flags: [...flags], dynamic: true };
+  }
+
+  if (!query) return { url: original, flags: [], dynamic: false };
+
+  // A record id anywhere in the query makes the whole URL specific to one record.
+  // Widen the path rather than dropping the param and leaving a dead link.
+  for (const [, rawValue] of new URLSearchParams(query)) {
+    if (UUID_ANYWHERE_RE.test(String(rawValue ?? ""))) {
       flags.add(SCRUB_FLAGS.UUID);
-      return { url: path.replace(UUID_ANYWHERE_RE, "*") + hash, flags: [...flags] };
+      return { url: path + "*" + hash, flags: [...flags], dynamic: true };
     }
-    return { url: original, flags: [] };
   }
 
   const kept = [];
@@ -131,10 +149,6 @@ export function scrubUrl(url) {
 
     if (STALE_KEY_RE.test(key)) {
       flags.add(SCRUB_FLAGS.STALE);
-      continue;
-    }
-    if (UUID_RE.test(value) || UUID_ANYWHERE_RE.test(value)) {
-      flags.add(SCRUB_FLAGS.UUID);
       continue;
     }
     if (PHONE_KEY_RE.test(key) || containsPhone(value)) {
@@ -164,7 +178,7 @@ export function scrubUrl(url) {
   const params = new URLSearchParams();
   for (const [k, v] of kept) params.append(k, v);
   const qs = params.toString();
-  return { url: path + (qs ? "?" + qs : "") + hash, flags: [...flags] };
+  return { url: path + (qs ? "?" + qs : "") + hash, flags: [...flags], dynamic: false };
 }
 
 function tryParseJsonDeep(value) {
@@ -180,15 +194,27 @@ function tryParseJsonDeep(value) {
   return { ok: false, value: null };
 }
 
-/** Scrub both URL fields of a v4 step. Never mutates the input. */
+/**
+ * Scrub both URL fields of a v4 step. Never mutates the input.
+ *
+ * When either field turned into a wildcard, navigationUrl is cleared: a wildcard
+ * describes a family of pages, so there is no single URL to navigate to. The runtime
+ * already treats an empty navigationUrl as "this page is reached by clicking through",
+ * which is exactly true of these steps.
+ */
 export function scrubStepUrls(step) {
   const pattern = scrubUrl(step.urlPattern);
   const navigation = scrubUrl(step.navigationUrl);
+  const dynamic = pattern.dynamic || navigation.dynamic;
+
   return {
     urlPattern: pattern.url,
-    navigationUrl: navigation.url,
+    navigationUrl: dynamic ? "" : navigation.url,
+    dynamic,
     flags: [...new Set([...pattern.flags, ...navigation.flags])],
-    changed: pattern.url !== String(step.urlPattern || "") || navigation.url !== String(step.navigationUrl || ""),
+    changed:
+      pattern.url !== String(step.urlPattern || "") ||
+      (dynamic ? "" : navigation.url) !== String(step.navigationUrl || ""),
   };
 }
 
