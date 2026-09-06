@@ -15,3 +15,6 @@ Thumbs.db
 # Next.js
 apps/*/.next/
 *.tsbuildinfo
+# Sinh lại bởi chính Next, và lật giữa .next/types (build) và .next/dev/types (dev)
+# nên mỗi lần đổi lệnh là worktree bẩn. create-next-app cũng ignore file này.
+apps/*/next-env.d.ts
