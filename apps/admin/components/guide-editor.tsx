@@ -130,7 +130,7 @@ export function GuideEditor({
   }
 
   const publishable = canPublish(validation, meta.siteCode);
-  const statusState = { current: status, dirty, busy, publishable };
+  const statusState = { current: status, dirty, busy, publishable, hasSite: !!meta.siteCode };
 
   return (
     <div className="stack">

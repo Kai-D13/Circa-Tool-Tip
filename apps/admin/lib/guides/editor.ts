@@ -213,16 +213,22 @@ export interface StatusActionState {
   dirty: boolean;
   busy: boolean;
   publishable: boolean;
+  /** A guide with no site cannot leave `unassigned` — CHECK guides_site_required. */
+  hasSite: boolean;
 }
 
 /**
  * Status changes bump updated_at server-side, which remounts the editor and throws away
  * unsaved edits — so every status button is locked while there are unsaved changes, not
  * just "Đánh dấu published".
+ *
+ * A site-less guide can only stay unassigned: offering "Chuyển về draft" or "Archive"
+ * there just produces a database error the operator cannot act on.
  */
 export function canChangeStatus(target: GuideStatus, state: StatusActionState): boolean {
   if (state.busy || state.dirty) return false;
   if (target === state.current) return false;
+  if (target !== "unassigned" && !state.hasSite) return false;
   if (target === "published") return state.publishable;
   return true;
 }

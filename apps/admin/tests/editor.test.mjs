@@ -222,28 +222,42 @@ test("only an unassigned guide may be left without a site", () => {
   assert.equal(canClearSite("archived"), false);
 });
 
-test("every status button is locked while there are unsaved changes", () => {
-  const clean = { current: "draft", dirty: false, busy: false, publishable: true };
-  assert.equal(canChangeStatus("published", clean), true);
-  assert.equal(canChangeStatus("archived", clean), true);
+const statusState = (over = {}) => ({
+  current: "draft", dirty: false, busy: false, publishable: true, hasSite: true, ...over,
+});
 
-  const dirty = { ...clean, dirty: true };
+test("every status button is locked while there are unsaved changes", () => {
+  assert.equal(canChangeStatus("published", statusState()), true);
+  assert.equal(canChangeStatus("archived", statusState()), true);
+
   for (const target of ["draft", "published", "archived"]) {
-    assert.equal(canChangeStatus(target, dirty), false, `${target} phải bị khoá khi dirty`);
+    assert.equal(canChangeStatus(target, statusState({ dirty: true })), false, `${target} phải bị khoá khi dirty`);
   }
 });
 
 test("status buttons are locked while saving, and the current status is not offered", () => {
-  const busy = { current: "draft", dirty: false, busy: true, publishable: true };
-  assert.equal(canChangeStatus("archived", busy), false);
-  assert.equal(canChangeStatus("draft", { ...busy, busy: false }), false, "đang là draft rồi");
+  assert.equal(canChangeStatus("archived", statusState({ busy: true })), false);
+  assert.equal(canChangeStatus("draft", statusState()), false, "đang là draft rồi");
 });
 
 test("published additionally requires the guide to be publishable", () => {
-  const base = { current: "draft", dirty: false, busy: false, publishable: false };
+  const base = statusState({ publishable: false });
   assert.equal(canChangeStatus("published", base), false);
   assert.equal(canChangeStatus("archived", base), true, "lỗi validate không chặn archive");
-  assert.equal(canChangeStatus("published", { ...base, publishable: true }), true);
+  assert.equal(canChangeStatus("published", statusState()), true);
+});
+
+test("a guide with no site can only stay unassigned", () => {
+  // CHECK guides_site_required từ chối mọi trạng thái khác khi site_code null, nên bật
+  // các nút đó chỉ tạo ra lỗi database mà người dùng không xử lý được.
+  const noSite = statusState({ current: "unassigned", hasSite: false, publishable: false });
+  assert.equal(canChangeStatus("draft", noSite), false);
+  assert.equal(canChangeStatus("archived", noSite), false);
+  assert.equal(canChangeStatus("published", noSite), false);
+
+  // Vừa chọn site (chưa lưu) thì vẫn khoá vì dirty; lưu xong mới mở.
+  assert.equal(canChangeStatus("draft", statusState({ current: "unassigned", dirty: true })), false);
+  assert.equal(canChangeStatus("draft", statusState({ current: "unassigned" })), true);
 });
 
 test("metadataOf maps null columns to empty strings the form can bind to", () => {

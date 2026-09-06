@@ -34,11 +34,14 @@ const EDITOR_SRC = readFileSync(resolve(HERE, "../components/guide-editor.tsx"),
  * (`admin_set_guide_status(p_guide_id uuid, p_status text)`) and a line-based split
  * silently sees only the first parameter.
  */
-function sqlParams(fnName) {
+function sqlSignature(fnName) {
   const m = SQL.match(new RegExp(`create or replace function public\\.${fnName}\\s*\\(([\\s\\S]*?)\\)\\s*returns`));
   assert.ok(m, `không tìm thấy ${fnName} trong migration`);
-  return m[1]
-    .replace(/--.*$/gm, "")
+  return m[1].replace(/--.*$/gm, "");
+}
+
+function sqlParams(fnName) {
+  return sqlSignature(fnName)
     .split(",")
     .map((s) => s.trim().split(/\s+/)[0])
     .filter((p) => /^p_\w+$/.test(p));
@@ -148,17 +151,55 @@ test("P0: the editor saves through the atomic RPC only, never the old two-call c
   assert.ok(!/rpcUpsertGuide/.test(EDITOR_SRC), "không được gọi admin_upsert_guide riêng lẻ");
 });
 
-test("the atomic RPC writes everything in one UPDATE, guarded in the WHERE", () => {
-  // The "(" matters: a bare name search would land on admin_save_guide_steps, which is
-  // declared earlier in migration 0003.
+/**
+ * Body of admin_save_guide.
+ *
+ * Both boundaries must be searched RELATIVE to the function start: admin_save_guide_steps
+ * is declared earlier in migration 0003, so an absolute indexOf for the closing `revoke`
+ * lands before the opening `create` and silently yields an empty string — every assertion
+ * against it would then pass or fail for the wrong reason.
+ */
+function atomicSaveBody() {
   const start = SQL.indexOf("create or replace function public.admin_save_guide(");
   assert.ok(start >= 0, "không tìm thấy admin_save_guide trong migration");
   const fn = SQL.slice(start);
-  const body = fn.slice(0, fn.indexOf("revoke all on function public.admin_save_guide"));
+  const end = fn.indexOf("revoke all on function public.admin_save_guide(");
+  assert.ok(end > 0, "không tìm thấy phần revoke của admin_save_guide");
+  const body = fn.slice(0, end);
+  assert.ok(body.length > 500, "thân hàm rỗng bất thường — kiểm tra lại cách cắt chuỗi");
+  return body;
+}
+
+test("the atomic RPC writes everything in one UPDATE, guarded in the WHERE", () => {
+  const body = atomicSaveBody();
   assert.equal((body.match(/^\s*update public\.guides set/gm) || []).length, 1, "đúng một câu UPDATE");
-  assert.match(body, /and \(p_expected_updated_at is null or updated_at = p_expected_updated_at\)/);
   assert.match(body, /draft_steps\s*=\s*p_steps/);
   assert.match(body, /name\s*=\s*trim\(p_name\)/);
+});
+
+test("P0: the optimistic guard cannot be bypassed by omitting the baseline", () => {
+  const sig = sqlSignature("admin_save_guide");
+  assert.ok(
+    !/p_expected_updated_at\s+timestamptz\s+default/i.test(sig),
+    "p_expected_updated_at không được có DEFAULT — bỏ trống là mở đường ghi đè",
+  );
+  assert.ok(!/p_validation\s+jsonb\s+default/i.test(sig), "p_validation không được có DEFAULT");
+
+  const body = atomicSaveBody();
+  assert.match(body, /if p_expected_updated_at is null then[\s\S]*?errcode = '22023'/, "null phải bị từ chối");
+  assert.match(body, /and updated_at = p_expected_updated_at/, "guard nằm thẳng trong WHERE");
+  assert.ok(
+    !/p_expected_updated_at is null or updated_at = p_expected_updated_at/.test(body),
+    "không còn nhánh cho phép bỏ qua guard",
+  );
+});
+
+test("the client type makes the baseline required, matching the SQL", () => {
+  const RPC_SRC = readFileSync(resolve(HERE, "../lib/guides/rpc.ts"), "utf8");
+  const iface = RPC_SRC.slice(RPC_SRC.indexOf("interface SaveGuideInput"));
+  const field = iface.slice(0, iface.indexOf("}")).match(/expectedUpdatedAt:\s*([^;]+);/);
+  assert.ok(field, "không tìm thấy expectedUpdatedAt");
+  assert.equal(field[1].trim(), "string", "phải là string, không phải string | null");
 });
 
 test("not-found is recognised and kept distinct from a conflict", () => {

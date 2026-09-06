@@ -45,7 +45,7 @@ node scripts/check-syntax.mjs                            # mọi file runtime ph
 node --test "packages/guide-schema/tests/*.test.mjs"     # unit test
 node scripts/import-legacy/cli.mjs                       # chạy lại importer
 
-pnpm --filter admin test          # 71 test logic thuần (import, triage, editor, RPC mapping, no-secrets)
+pnpm --filter admin test          # test logic thuần (import, triage, editor, RPC mapping, no-secrets)
 pnpm --filter admin typecheck
 pnpm --filter admin build
 pnpm --filter admin dev           # cần apps/admin/.env.local, xem docs/QA_LOCALHOST_2A.md

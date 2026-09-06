@@ -289,6 +289,7 @@ Hai helper: `guide_steps_shape_error(jsonb)` kiểm hình dạng mảng step, v�
 | 3 | `admin_get_guide(p_guide_id) → jsonb` | authenticated |
 | 4 | `admin_upsert_guide(...) → jsonb` | authenticated |
 | 5 | `admin_save_guide_steps(p_guide_id, p_steps, p_validation, p_expected_updated_at) → jsonb` | authenticated |
+| 5b | `admin_save_guide(p_guide_id, p_name, p_site, p_group_name, p_start_url, p_sort_order, p_notes, p_steps, p_validation, p_expected_updated_at) → jsonb` — **migration 0005**, editor dùng RPC này | authenticated |
 | 6 | `admin_assign_guide_site(p_guide_id, p_site, p_group_name) → jsonb` | authenticated |
 | 7 | `admin_set_guide_status(p_guide_id, p_status) → jsonb` | authenticated |
 | 8 | `admin_delete_guide(p_guide_id) → jsonb` | authenticated |
@@ -305,6 +306,13 @@ grant execute ... to <role>`.
 **`admin_save_guide_steps` phải atomic.** Điều kiện `updated_at` nằm trong chính mệnh đề
 `WHERE` của `UPDATE` và kết quả xác nhận bằng `ROW_COUNT`. Kiểu SELECT-rồi-so-sánh-rồi-
 UPDATE để hai request đồng thời cùng vượt qua và request sau ghi đè request trước.
+
+**Editor lưu bằng `admin_save_guide` (migration 0005), không phải cặp
+`admin_save_guide_steps` + `admin_upsert_guide`.** Hai lời gọi là hai transaction: nếu
+lời thứ hai hỏng thì steps đã commit còn metadata thì chưa. `admin_save_guide` ghi
+metadata + steps + step_count + validation + audit trong đúng một `UPDATE`, validate hết
+trước khi ghi, và `p_expected_updated_at` **không có DEFAULT** — bỏ trống baseline là mở
+đường ghi đè dữ liệu người khác, nên RPC từ chối `null` bằng `22023`.
 
 **`admin_publish_site`:**
 1. `is_admin()`.

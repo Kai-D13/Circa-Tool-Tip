@@ -24,8 +24,11 @@ create or replace function public.admin_save_guide(
   p_sort_order          integer,
   p_notes               text,
   p_steps               jsonb,
-  p_validation          jsonb default '{}'::jsonb,
-  p_expected_updated_at timestamptz default null
+  -- Không có DEFAULT cho hai tham số cuối: chúng là một phần của contract, không phải
+  -- tuỳ chọn. Cho p_expected_updated_at mặc định null nghĩa là mở sẵn một đường ghi đè
+  -- dữ liệu của người khác chỉ bằng cách bỏ trống tham số.
+  p_validation          jsonb,
+  p_expected_updated_at timestamptz
 )
 returns jsonb
 language plpgsql
@@ -44,6 +47,11 @@ begin
 
   -- ------------------------------------------------------------------ validate
   -- Toàn bộ kiểm tra chạy TRƯỚC khi ghi. Nếu có gì sai thì không trường nào đổi.
+  if p_expected_updated_at is null then
+    raise exception 'Thiếu p_expected_updated_at — mọi lần lưu phải kèm updated_at đã đọc'
+      using errcode = '22023';
+  end if;
+
   if p_name is null or length(trim(p_name)) = 0 then
     raise exception 'Tên bộ không được rỗng' using errcode = '22023';
   end if;
@@ -102,7 +110,7 @@ begin
     updated_by_email = v_email,
     updated_at       = clock_timestamp()
   where id = p_guide_id
-    and (p_expected_updated_at is null or updated_at = p_expected_updated_at)
+    and updated_at = p_expected_updated_at
   returning updated_at into v_new_time;
 
   get diagnostics v_rows = row_count;

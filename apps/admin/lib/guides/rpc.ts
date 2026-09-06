@@ -101,7 +101,8 @@ export interface SaveGuideInput extends UpsertGuideInput {
   guideId: string;
   steps: unknown[];
   validation: unknown;
-  expectedUpdatedAt: string | null;
+  /** Required, not nullable: the RPC refuses a save that carries no baseline. */
+  expectedUpdatedAt: string;
 }
 
 /**
