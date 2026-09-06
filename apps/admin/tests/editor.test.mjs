@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import {
   blankStep,
   buildValidationPayload,
+  canChangeStatus,
+  canClearSite,
   canPublish,
   formatSelectors,
   groupIssues,
@@ -207,6 +209,41 @@ test("dirty tracking ignores field order and default representation", () => {
   assert.equal(isDirty(a, b), false, "intent/position mặc định không tính là thay đổi");
   assert.equal(isDirty(a, { meta: meta({ name: "Khác" }), steps: [step()] }), true);
   assert.equal(isDirty(a, { meta: meta(), steps: [step({ title: "khác" })] }), true);
+});
+
+/* ------------------------------------------------------------------ ui guards */
+
+test("only an unassigned guide may be left without a site", () => {
+  // The database refuses to clear the site of a triaged guide, so offering the option
+  // would let the operator pick it, save, and find the old site still there.
+  assert.equal(canClearSite("unassigned"), true);
+  assert.equal(canClearSite("draft"), false);
+  assert.equal(canClearSite("published"), false);
+  assert.equal(canClearSite("archived"), false);
+});
+
+test("every status button is locked while there are unsaved changes", () => {
+  const clean = { current: "draft", dirty: false, busy: false, publishable: true };
+  assert.equal(canChangeStatus("published", clean), true);
+  assert.equal(canChangeStatus("archived", clean), true);
+
+  const dirty = { ...clean, dirty: true };
+  for (const target of ["draft", "published", "archived"]) {
+    assert.equal(canChangeStatus(target, dirty), false, `${target} phải bị khoá khi dirty`);
+  }
+});
+
+test("status buttons are locked while saving, and the current status is not offered", () => {
+  const busy = { current: "draft", dirty: false, busy: true, publishable: true };
+  assert.equal(canChangeStatus("archived", busy), false);
+  assert.equal(canChangeStatus("draft", { ...busy, busy: false }), false, "đang là draft rồi");
+});
+
+test("published additionally requires the guide to be publishable", () => {
+  const base = { current: "draft", dirty: false, busy: false, publishable: false };
+  assert.equal(canChangeStatus("published", base), false);
+  assert.equal(canChangeStatus("archived", base), true, "lỗi validate không chặn archive");
+  assert.equal(canChangeStatus("published", { ...base, publishable: true }), true);
 });
 
 test("metadataOf maps null columns to empty strings the form can bind to", () => {

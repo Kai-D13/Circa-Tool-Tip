@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { AppShell } from "../../../components/app-shell";
 import { GuideEditor } from "../../../components/guide-editor";
 import { requireAdmin } from "../../../lib/auth/require-admin";
-import { rpcGetGuide } from "../../../lib/guides/rpc";
+import { isNotFoundError, rpcGetGuide } from "../../../lib/guides/rpc";
 import { fetchSites } from "../../../lib/guides/sites";
 import { createClient } from "../../../lib/supabase/server";
 
@@ -15,11 +15,13 @@ export default async function GuideDetailPage({ params }: { params: Promise<{ id
   const session = await requireAdmin();
   const supabase = await createClient();
 
-  const [detail, sites] = await Promise.all([
-    rpcGetGuide(supabase, id).catch(() => null),
-    fetchSites(supabase),
-  ]);
-  if (!detail) notFound();
+  // Only a genuine "row does not exist" becomes a 404. Swallowing every failure would
+  // show "Not Found" for a network outage or a permission problem and hide the real cause.
+  const detail = await rpcGetGuide(supabase, id).catch((err) => {
+    if (isNotFoundError(err)) notFound();
+    throw err;
+  });
+  const sites = await fetchSites(supabase);
 
   return (
     <AppShell current="/guides" email={session.email}>

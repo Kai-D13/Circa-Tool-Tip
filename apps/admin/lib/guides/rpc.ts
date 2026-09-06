@@ -6,6 +6,7 @@ import type {
   GuideStatus,
   ImportResult,
   ListGuidesResult,
+  SaveGuideResult,
   SaveStepsResult,
   UpsertGuideResult,
 } from "./types";
@@ -28,9 +29,15 @@ export class RpcError extends Error {
 }
 
 export const CONFLICT_SQLSTATE = "40001";
+export const NOT_FOUND_SQLSTATE = "P0002";
 
 export function isConflictError(err: unknown): boolean {
   return err instanceof RpcError && err.code === CONFLICT_SQLSTATE;
+}
+
+/** Only a genuine "row does not exist" may be turned into a 404 page. */
+export function isNotFoundError(err: unknown): boolean {
+  return err instanceof RpcError && err.code === NOT_FOUND_SQLSTATE;
 }
 
 export function buildImportArgs(payload: unknown, sourceFilename: string, contentChecksum: string) {
@@ -87,6 +94,33 @@ export function buildSaveStepsArgs(
     p_steps: steps,
     p_validation: validation,
     p_expected_updated_at: expectedUpdatedAt,
+  };
+}
+
+export interface SaveGuideInput extends UpsertGuideInput {
+  guideId: string;
+  steps: unknown[];
+  validation: unknown;
+  expectedUpdatedAt: string | null;
+}
+
+/**
+ * One Save button = one transaction. `admin_save_guide` (migration 0005) writes metadata
+ * and steps in a single UPDATE behind one optimistic guard, so a rejected save cannot
+ * leave steps committed with the metadata missing.
+ */
+export function buildSaveGuideArgs(input: SaveGuideInput) {
+  return {
+    p_guide_id: input.guideId,
+    p_name: input.name.trim(),
+    p_site: input.site,
+    p_group_name: input.groupName.trim(),
+    p_start_url: input.startUrl.trim(),
+    p_sort_order: input.sortOrder,
+    p_notes: input.notes,
+    p_steps: input.steps,
+    p_validation: input.validation,
+    p_expected_updated_at: input.expectedUpdatedAt,
   };
 }
 
@@ -157,6 +191,11 @@ export async function rpcSaveGuideSteps(
     buildSaveStepsArgs(guideId, steps, validation, expectedUpdatedAt),
   );
   return unwrap<SaveStepsResult>(r, "admin_save_guide_steps");
+}
+
+export async function rpcSaveGuide(supabase: SupabaseClient, input: SaveGuideInput): Promise<SaveGuideResult> {
+  const r = await supabase.rpc("admin_save_guide", buildSaveGuideArgs(input));
+  return unwrap<SaveGuideResult>(r, "admin_save_guide");
 }
 
 export async function rpcSetGuideStatus(

@@ -6,20 +6,27 @@ import { fileURLToPath } from "node:url";
 
 import {
   CONFLICT_SQLSTATE,
+  NOT_FOUND_SQLSTATE,
   RpcError,
   buildAssignArgs,
   buildDeleteGuideArgs,
   buildGetGuideArgs,
   buildImportArgs,
   buildListArgs,
+  buildSaveGuideArgs,
   buildSaveStepsArgs,
   buildSetStatusArgs,
   buildUpsertGuideArgs,
   isConflictError,
+  isNotFoundError,
 } from "../lib/guides/rpc.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SQL = readFileSync(resolve(HERE, "../../../supabase/migrations/20260906_0003_guide_rpcs.sql"), "utf8");
+// Signatures live across several migrations; read them all so a test can reference any.
+const SQL = ["20260906_0003_guide_rpcs.sql", "20260906_0005_atomic_guide_save.sql"]
+  .map((f) => readFileSync(resolve(HERE, "../../../supabase/migrations/", f), "utf8"))
+  .join("\n");
+const EDITOR_SRC = readFileSync(resolve(HERE, "../components/guide-editor.tsx"), "utf8");
 
 /**
  * Extract the parameter names of a plpgsql function from the migration source.
@@ -119,4 +126,46 @@ test("other failures are not mistaken for a conflict", () => {
 test("the SQL really raises 40001 for a stale write", () => {
   // Keeps the client constant honest against the migration it depends on.
   assert.match(SQL, /Hãy tải lại trước khi lưu[\s\S]*?errcode = '40001'/);
+});
+
+/* ------------------------------------------------- atomic save (migration 0005) */
+
+test("admin_save_guide args match the SQL signature", () => {
+  const args = buildSaveGuideArgs({
+    guideId: "id", name: " G ", site: "pos", groupName: " Kho ", startUrl: " /x ",
+    sortOrder: 2, notes: null, steps: [], validation: {}, expectedUpdatedAt: "2026-09-06T00:00:00Z",
+  });
+  assert.deepEqual(Object.keys(args).sort(), sqlParams("admin_save_guide").sort());
+  assert.equal(sqlParams("admin_save_guide").length, 10);
+  assert.equal(args.p_name, "G");
+  assert.equal(args.p_group_name, "Kho");
+  assert.equal(args.p_expected_updated_at, "2026-09-06T00:00:00Z");
+});
+
+test("P0: the editor saves through the atomic RPC only, never the old two-call chain", () => {
+  assert.ok(EDITOR_SRC.includes("rpcSaveGuide("), "editor phải gọi RPC atomic");
+  assert.ok(!/rpcSaveGuideSteps/.test(EDITOR_SRC), "không được gọi admin_save_guide_steps riêng lẻ");
+  assert.ok(!/rpcUpsertGuide/.test(EDITOR_SRC), "không được gọi admin_upsert_guide riêng lẻ");
+});
+
+test("the atomic RPC writes everything in one UPDATE, guarded in the WHERE", () => {
+  // The "(" matters: a bare name search would land on admin_save_guide_steps, which is
+  // declared earlier in migration 0003.
+  const start = SQL.indexOf("create or replace function public.admin_save_guide(");
+  assert.ok(start >= 0, "không tìm thấy admin_save_guide trong migration");
+  const fn = SQL.slice(start);
+  const body = fn.slice(0, fn.indexOf("revoke all on function public.admin_save_guide"));
+  assert.equal((body.match(/^\s*update public\.guides set/gm) || []).length, 1, "đúng một câu UPDATE");
+  assert.match(body, /and \(p_expected_updated_at is null or updated_at = p_expected_updated_at\)/);
+  assert.match(body, /draft_steps\s*=\s*p_steps/);
+  assert.match(body, /name\s*=\s*trim\(p_name\)/);
+});
+
+test("not-found is recognised and kept distinct from a conflict", () => {
+  assert.equal(NOT_FOUND_SQLSTATE, "P0002");
+  const notFound = new RpcError("admin_get_guide", "Không tìm thấy guide", "P0002");
+  assert.ok(isNotFoundError(notFound));
+  assert.ok(!isConflictError(notFound));
+  assert.ok(!isNotFoundError(new RpcError("x", "mạng hỏng", "")));
+  assert.ok(!isNotFoundError(new Error("P0002")));
 });

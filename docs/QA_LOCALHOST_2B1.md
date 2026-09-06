@@ -3,6 +3,13 @@
 Tiền đề: Batch 2A đã pass — 48 guide / 409 step / 0 unassigned / POS 13 + Admin 35 /
 0 release. Checklist này **không** publish gì và **không** đụng release.
 
+> **Trước khi QA phải chạy migration `0005`** (RPC lưu nguyên tử) và test của nó:
+>
+> 1. `supabase/migrations/20260906_0005_atomic_guide_save.sql`
+> 2. `supabase/tests/atomic_save_test.sql` — phải in `ALL ATOMIC SAVE TESTS PASSED`
+>
+> Không chạy lại `0001–0004`.
+
 ```bash
 cd C:\QR_code\Circa-Tool-Tip
 pnpm --filter admin dev
@@ -46,6 +53,9 @@ Chọn **một** bộ, ghi lại tên: ______________________
 | 3.4 | Khi đang có lỗi đỏ, nhìn nút **Đánh dấu published** | Nút **bị khoá**, dưới có dòng giải thích còn N lỗi validate | |
 | 3.5 | Bấm **Lưu thay đổi** khi đang có lỗi | **Vẫn lưu được** (lỗi không chặn lưu, chỉ chặn publish) | |
 | 3.6 | Hoàn tác: trả action và selector về như cũ, lưu | Hết lỗi; nút published mở lại (nhưng **đừng bấm**) | |
+| 3.7 | Xoá trắng **Tên bộ** rồi sửa thêm tiêu đề một bước, bấm lưu | Báo lỗi "Tên bộ không được rỗng". F5 lại: **cả tên lẫn tiêu đề bước đều nguyên như cũ** — không có chuyện step đã lưu còn metadata thì chưa | |
+| 3.8 | Với bộ đã có site, mở dropdown **Site** | **Không** còn lựa chọn "— chưa gán —" (database không cho xoá site của bộ đã phân loại) | |
+| 3.9 | Sửa bất kỳ trường nào (chưa lưu), nhìn ba nút trạng thái | **Cả ba** nút "Chuyển về draft", "Đánh dấu published", "Archive" đều **bị khoá**, tooltip "Lưu thay đổi trước" | |
 
 ## 4. Xung đột hai tab — `40001`
 
@@ -89,4 +99,5 @@ nguyên trạng.
 - Kết quả từng dòng ở cột Kết quả.
 - Bất kỳ thông báo lỗi đỏ nào ngoài dự kiến (chụp nguyên văn).
 
-**Không** bấm published, **không** publish release, **không** chạy migration.
+**Không** bấm published, **không** publish release, **không** chạy thêm migration nào ngoài
+`0005` đã nêu ở đầu tài liệu.

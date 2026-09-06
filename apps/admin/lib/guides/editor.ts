@@ -6,7 +6,7 @@ import {
   type ValidationResult,
 } from "@circa/guide-schema";
 
-import type { GuideDetailRow, GuideValidation } from "./types";
+import type { GuideDetailRow, GuideStatus, GuideValidation } from "./types";
 
 /**
  * Pure editor logic. No React, no Supabase — everything here is unit-tested with
@@ -195,6 +195,36 @@ export function buildValidationPayload(result: ValidationResult, existing: Guide
 /** Errors block publishing; warnings never do. */
 export function canPublish(result: ValidationResult, siteCode: string | null): boolean {
   return result.errors.length === 0 && !!siteCode;
+}
+
+/* ----------------------------------------------------------------- ui guards */
+
+/**
+ * Only a guide still in triage may have no site. Offering "— chưa gán —" for a guide
+ * that already has one would be a lie: the database refuses to clear it, so the operator
+ * would pick the option, save, and find the old site still there.
+ */
+export function canClearSite(status: GuideStatus): boolean {
+  return status === "unassigned";
+}
+
+export interface StatusActionState {
+  current: GuideStatus;
+  dirty: boolean;
+  busy: boolean;
+  publishable: boolean;
+}
+
+/**
+ * Status changes bump updated_at server-side, which remounts the editor and throws away
+ * unsaved edits — so every status button is locked while there are unsaved changes, not
+ * just "Đánh dấu published".
+ */
+export function canChangeStatus(target: GuideStatus, state: StatusActionState): boolean {
+  if (state.busy || state.dirty) return false;
+  if (target === state.current) return false;
+  if (target === "published") return state.publishable;
+  return true;
 }
 
 /* --------------------------------------------------------------------- dirty */

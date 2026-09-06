@@ -19,6 +19,20 @@ Ai chạy: **stakeholder**, bằng Supabase SQL Editor của project Tool-tip
 | 5 | `supabase/tests/guide_rpc_test.sql` | **Tự rollback.** Phải in `ALL GUIDE RPC TESTS PASSED`. |
 | 6 | `supabase/seed/sites.sql` | Seed `pos` + `admin`. |
 
+## Migration bổ sung sau baseline
+
+`0001–0004` là **baseline đã áp dụng** — không sửa lại. Thay đổi DB mới đi qua `0005+`.
+
+| Bước | File | Ghi chú |
+|---|---|---|
+| 7 | `supabase/migrations/20260906_0005_atomic_guide_save.sql` | Thêm `admin_save_guide` — lưu metadata + steps trong MỘT transaction. Chỉ `create or replace function`, chạy lại an toàn. |
+| 8 | `supabase/tests/atomic_save_test.sql` | **Tự rollback.** Phải in `ALL ATOMIC SAVE TESTS PASSED`. |
+
+Vì sao cần `0005`: editor từng lưu bằng hai lời gọi (`admin_save_guide_steps` rồi
+`admin_upsert_guide`). Hai lời gọi là hai transaction, nên nếu lời thứ hai hỏng thì steps
+đã ghi còn metadata thì chưa — và lần lưu kế tiếp ăn `40001` do chính lần lưu nửa chừng
+đó. Một nút Save phải là một transaction.
+
 ## Kiểm tra sau bước 1
 
 ```sql
@@ -41,6 +55,7 @@ select count(*) from public.guides;   -- 0, import chạy ở Batch 1B
 Chạy **ngược thứ tự**, vì function tham chiếu bảng và policy tham chiếu `is_admin()`:
 
 ```
+supabase/rollback/20260906_0005_atomic_guide_save.down.sql -- chỉ drop function, an toàn
 supabase/rollback/20260906_0004_release_rpcs.down.sql   -- chỉ drop function, an toàn
 supabase/rollback/20260906_0003_guide_rpcs.down.sql     -- chỉ drop function, an toàn
 supabase/rollback/20260906_0002_guide_schema_v5.down.sql -- XOÁ DỮ LIỆU

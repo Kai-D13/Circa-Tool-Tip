@@ -7,6 +7,8 @@ import type { DraftStep } from "@circa/guide-schema";
 import {
   blankStep,
   buildValidationPayload,
+  canChangeStatus,
+  canClearSite,
   canPublish,
   groupIssues,
   insertStepAfter,
@@ -20,13 +22,7 @@ import {
   validateForEditor,
   type GuideMetadata,
 } from "../lib/guides/editor";
-import {
-  isConflictError,
-  rpcDeleteGuide,
-  rpcSaveGuideSteps,
-  rpcSetGuideStatus,
-  rpcUpsertGuide,
-} from "../lib/guides/rpc";
+import { isConflictError, rpcDeleteGuide, rpcSaveGuide, rpcSetGuideStatus } from "../lib/guides/rpc";
 import type { GuideDetailRow, GuideStatus, SiteOption } from "../lib/guides/types";
 import { createClient } from "../lib/supabase/client";
 import { StepEditor } from "./step-editor";
@@ -74,38 +70,27 @@ export function GuideEditor({
     setSaving("saving");
     setError(null);
     try {
-      const supabase = createClient();
+      // ONE call = one transaction. Metadata and steps are written together behind a
+      // single optimistic guard, so a rejected save cannot leave steps committed while
+      // the metadata was refused.
+      const saved = await rpcSaveGuide(createClient(), {
+        guideId: guide.id,
+        name: meta.name,
+        site: meta.siteCode,
+        groupName: meta.groupName,
+        startUrl: meta.startUrl,
+        sortOrder: meta.sortOrder,
+        notes: meta.notes.trim() === "" ? null : meta.notes,
+        steps: serializeSteps(steps),
+        validation: buildValidationPayload(validation, guide.validation),
+        expectedUpdatedAt: baseUpdatedAt,
+      });
 
-      // Steps go first: this is the call that carries the optimistic guard. Saving the
-      // metadata first would bump updated_at and make our own guard fail every time.
-      const saved = await rpcSaveGuideSteps(
-        supabase,
-        guide.id,
-        serializeSteps(steps),
-        buildValidationPayload(validation, guide.validation),
-        baseUpdatedAt,
-      );
-
-      let latest = saved.updatedAt;
-      if (JSON.stringify(meta) !== JSON.stringify(baseline.meta)) {
-        await rpcUpsertGuide(supabase, {
-          guideId: guide.id,
-          name: meta.name,
-          site: meta.siteCode,
-          groupName: meta.groupName,
-          startUrl: meta.startUrl,
-          sortOrder: meta.sortOrder,
-          notes: meta.notes.trim() === "" ? null : meta.notes,
-        });
-        // upsert bumps updated_at again and does not return it, so the next guarded save
-        // must use a value read back from the server.
-        latest = "";
-      }
-
+      setBaseUpdatedAt(saved.updatedAt);
+      setStatus(saved.status);
       setBaseline({ meta, steps });
       setSaving("saved");
-      if (latest) setBaseUpdatedAt(latest);
-      // Re-read so baseUpdatedAt, publishError and the guide list are all truthful.
+      // Refresh so publishError and the guide list reflect the new state.
       router.refresh();
     } catch (err) {
       if (isConflictError(err)) {
@@ -145,6 +130,7 @@ export function GuideEditor({
   }
 
   const publishable = canPublish(validation, meta.siteCode);
+  const statusState = { current: status, dirty, busy, publishable };
 
   return (
     <div className="stack">
@@ -170,7 +156,9 @@ export function GuideEditor({
           <div className="field" style={{ width: 160 }}>
             <label className="label">Site</label>
             <select className="select" value={meta.siteCode ?? ""} disabled={busy} onChange={(e) => patchMeta({ siteCode: e.target.value || null })}>
-              <option value="">— chưa gán —</option>
+              {/* Chỉ bộ còn trong hàng chờ phân loại mới được để trống site — database
+                  từ chối xoá site của bộ đã phân loại, nên hiện lựa chọn đó là nói dối. */}
+              {canClearSite(status) ? <option value="">— chưa gán —</option> : null}
               {sites.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
             </select>
           </div>
@@ -244,21 +232,44 @@ export function GuideEditor({
           </span>
         </div>
 
+        {/* Mọi nút đổi trạng thái đều khoá khi còn thay đổi chưa lưu: đổi trạng thái bump
+            updated_at ở server, editor remount và các chỉnh sửa chưa lưu sẽ biến mất. */}
         <div className="row">
-          <button className="btn btn-sm" type="button" disabled={busy || status === "draft"} onClick={() => changeStatus("draft")}>Chuyển về draft</button>
           <button
             className="btn btn-sm"
             type="button"
-            disabled={busy || dirty || !publishable || status === "published"}
-            title={
-              dirty ? "Lưu thay đổi trước" : !publishable ? "Còn lỗi validate hoặc chưa gán site" : undefined
-            }
+            disabled={!canChangeStatus("draft", statusState)}
+            title={dirty ? "Lưu thay đổi trước" : undefined}
+            onClick={() => changeStatus("draft")}
+          >
+            Chuyển về draft
+          </button>
+          <button
+            className="btn btn-sm"
+            type="button"
+            disabled={!canChangeStatus("published", statusState)}
+            title={dirty ? "Lưu thay đổi trước" : !publishable ? "Còn lỗi validate hoặc chưa gán site" : undefined}
             onClick={() => changeStatus("published")}
           >
             Đánh dấu published
           </button>
-          <button className="btn btn-sm" type="button" disabled={busy || status === "archived"} onClick={() => changeStatus("archived")}>Archive</button>
-          <button className="btn btn-sm" type="button" disabled={busy || status === "published"} onClick={remove} style={{ marginLeft: "auto", color: "var(--danger)" }}>
+          <button
+            className="btn btn-sm"
+            type="button"
+            disabled={!canChangeStatus("archived", statusState)}
+            title={dirty ? "Lưu thay đổi trước" : undefined}
+            onClick={() => changeStatus("archived")}
+          >
+            Archive
+          </button>
+          <button
+            className="btn btn-sm"
+            type="button"
+            disabled={busy || dirty || status === "published"}
+            title={dirty ? "Lưu thay đổi trước" : undefined}
+            onClick={remove}
+            style={{ marginLeft: "auto", color: "var(--danger)" }}
+          >
             Xoá bộ
           </button>
         </div>

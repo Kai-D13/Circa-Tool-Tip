@@ -102,6 +102,16 @@ export interface SaveStepsResult {
   updatedAt: string;
 }
 
+/** Result of the atomic save (migration 0005). */
+export interface SaveGuideResult {
+  ok: boolean;
+  guideId: string;
+  stepCount: number;
+  /** Server-side status after the save; unassigned becomes draft once a site is set. */
+  status: GuideStatus;
+  updatedAt: string;
+}
+
 export interface SiteOption {
   code: string;
   label: string;
