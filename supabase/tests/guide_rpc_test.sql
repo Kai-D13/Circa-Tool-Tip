@@ -348,7 +348,7 @@ select pg_temp.expect(
   'nhóm được gom từ nhãn group_name');
 
 select pg_temp.expect(
-  (select checksum = 'sha256:' || encode(digest((payload - 'checksum')::text, 'sha256'), 'hex')
+  (select checksum = 'sha256:' || encode(sha256(convert_to((payload - 'checksum')::text, 'UTF8')), 'hex')
      from public.releases where site_code = 'pos' and revision = 1),
   'checksum khớp với payload đã bỏ trường checksum');
 

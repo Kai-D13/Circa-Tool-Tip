@@ -45,6 +45,7 @@ declare
   v_email       text;
   v_now         timestamptz := now();
   v_bad         record;
+  v_error       text;
 begin
   perform public.require_admin();
 
@@ -67,17 +68,14 @@ begin
   -- audit P0-3: không tạo ra release mà extension chắc chắn từ chối. Một guide hỏng làm
   -- cả site mất hướng dẫn, nên kiểm tra trước khi ghi bất cứ thứ gì.
   for v_bad in
-    select id, name from public.guides
+    select id from public.guides
     where site_code = p_site and status = 'published'
     order by sort_order, name
   loop
-    declare
-      v_error text := public.guide_publish_error(v_bad.id);
-    begin
-      if v_error is not null then
-        raise exception 'Không publish được site % — %', p_site, v_error using errcode = '22023';
-      end if;
-    end;
+    v_error := public.guide_publish_error(v_bad.id);
+    if v_error is not null then
+      raise exception 'Không publish được site % — %', p_site, v_error using errcode = '22023';
+    end if;
   end loop;
 
   -- site code -> origin cho MỌI site đang bật: release của POS phải gọi tên được origin
@@ -153,7 +151,10 @@ begin
     raise exception 'Sai lệch số step trong payload' using errcode = '22023';
   end if;
 
-  v_checksum := 'sha256:' || encode(digest(v_payload::text, 'sha256'), 'hex');
+  -- sha256() và convert_to() nằm trong pg_catalog nên luôn resolve được. digest() thì
+  -- đến từ pgcrypto, mà trên Supabase pgcrypto cài ở schema `extensions` — hàm này chạy
+  -- với `set search_path = public` nên digest() sẽ KHÔNG tìm thấy lúc runtime.
+  v_checksum := 'sha256:' || encode(sha256(convert_to(v_payload::text, 'UTF8')), 'hex');
   v_payload  := v_payload || jsonb_build_object('checksum', v_checksum);
 
   select lower(trim(email)) into v_email from auth.users where id = auth.uid();
@@ -234,7 +235,10 @@ begin
          'revision', v_revision,
          'releasedAt', to_char(v_now at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
        );
-  v_checksum := 'sha256:' || encode(digest(v_payload::text, 'sha256'), 'hex');
+  -- sha256() và convert_to() nằm trong pg_catalog nên luôn resolve được. digest() thì
+  -- đến từ pgcrypto, mà trên Supabase pgcrypto cài ở schema `extensions` — hàm này chạy
+  -- với `set search_path = public` nên digest() sẽ KHÔNG tìm thấy lúc runtime.
+  v_checksum := 'sha256:' || encode(sha256(convert_to(v_payload::text, 'UTF8')), 'hex');
   v_payload := v_payload || jsonb_build_object('checksum', v_checksum);
 
   select lower(trim(email)) into v_email from auth.users where id = auth.uid();

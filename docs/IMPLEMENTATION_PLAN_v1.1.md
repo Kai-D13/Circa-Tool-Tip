@@ -483,6 +483,23 @@ Replay draft 48 guide (pha 1 dry-run) · repair step lỗi · stakeholder duyệ
 | P2 | Tài liệu còn nhắc `releaseChecksum()` đã xoá | Đã dọn ở plan §5 và ở đầu `checksum.ts` |
 | P2 | Artifact còn `groupId: null` | Đổi thành `groupName: ""` cho khớp cột `guides.group_name` |
 | P2 | Mô tả test P0-4 chưa chính xác | Nói rõ: test chạy trên **fixture tổng hợp** (bản production chứa dữ liệu khách hàng nên không nằm trong repo). Sáu step thật được đối soát bằng cách chạy importer và in ra bảng trong `IMPORT_REPORT.md` §9 |
+
+### Vòng ba (Batch 1A.3) — lỗi lộ ra ở lần chạy thật đầu tiên
+
+Migration `0001`, `0002`, `0003`, `0004` chạy thành công trên Supabase; `guide_rpc_test.sql`
+dừng ở mục 5 với `42804`. Hai lỗi cùng một họ: **định danh không resolve được theo kiểu
+hoặc theo `search_path` lúc runtime** — thứ mà chỉ PostgreSQL thật mới phát hiện.
+
+| # | Lỗi | Sửa |
+|---|---|---|
+| 1 | `case when p_site is null then 'unassigned' else 'draft' end` gán vào cột enum. Cả hai nhánh là literal `unknown` nên Postgres suy ra `text` → `42804` | Ép kiểu tường minh cả hai nhánh sang `public.guide_status` |
+| 2 | **Chưa nổ nhưng sẽ nổ ngay sau đó:** `digest(..., 'sha256')` đến từ `pgcrypto`, mà Supabase cài extension ở schema `extensions`. Các RPC chạy với `set search_path = public` nên `digest()` không tìm thấy lúc runtime → `admin_publish_site` và `admin_rollback_site` sẽ hỏng ở mục 6 và 7 | Dùng `sha256(convert_to(x, 'UTF8'))` — cả hai đều ở `pg_catalog` nên luôn resolve, và bỏ luôn phụ thuộc vào pgcrypto |
+| 3 | `admin_upsert_guide` có `p_group_name default ''` nên mỗi lần sửa metadata không gửi kèm trường này sẽ lặng lẽ xoá nhóm | Đổi default sang `null` = "giữ nguyên"; truyền `''` mới là xoá |
+| 4 | Khối `declare/begin/end` lồng trong vòng lặp của `admin_publish_site` | Đưa biến ra `declare` ngoài, bỏ khối lồng |
+
+**Bài học ghi lại:** mọi hàm trong repo này chạy với `set search_path = public`. Chỉ được
+gọi hàm ở `pg_catalog`, ở `public`, hoặc gọi kèm schema tường minh. Không gọi hàm của
+extension mà không ghi rõ schema.
 | P1 | Checksum lẫn lộn | Ba tên riêng: `sourceFileSha256`, `contentChecksum`, `artifactFileSha256`. Bỏ `releaseChecksum()` phía JS — checksum release chỉ tính ở SQL |
 | P1 | `expect_reject` bắt mọi exception | Nhận thêm SQLSTATE mong đợi và so khớp |
 | P1 | Validate group theo effective site | Không còn vấn đề: nhóm là cột text, không phải bảng có FK |

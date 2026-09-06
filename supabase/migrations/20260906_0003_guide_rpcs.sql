@@ -274,7 +274,9 @@ create or replace function public.admin_upsert_guide(
   p_guide_id   uuid,
   p_name       text,
   p_site       text default null,
-  p_group_name text default '',
+  -- null nghĩa là "giữ nguyên nhóm hiện tại"; truyền '' để xoá nhóm. Mặc định '' sẽ
+  -- lặng lẽ xoá nhóm mỗi lần sửa metadata mà không gửi kèm trường này.
+  p_group_name text default null,
   p_start_url  text default '',
   p_sort_order integer default 0,
   p_notes      text default null
@@ -308,7 +310,12 @@ begin
     ) values (
       trim(p_name), p_site, coalesce(trim(p_group_name), ''), coalesce(p_start_url, ''),
       coalesce(p_sort_order, 0), p_notes,
-      case when p_site is null then 'unassigned' else 'draft' end,
+      -- Cả hai nhánh phải được ép kiểu tường minh: nếu cả hai đều là literal `unknown`,
+      -- Postgres suy ra `text` và INSERT vào cột enum sẽ hỏng với 42804.
+      case
+        when p_site is null then 'unassigned'::public.guide_status
+        else 'draft'::public.guide_status
+      end,
       auth.uid(), v_email, auth.uid(), v_email
     )
     returning id into v_id;
