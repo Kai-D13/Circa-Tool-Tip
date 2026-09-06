@@ -423,9 +423,18 @@ Giao nộp: commit SHA/DIFF · danh sách file · lệnh test + full output · x
 
 Stakeholder chạy migration bằng SQL Editor → tạo Admin Auth user → seed allowlist → chạy SQL test trong transaction rollback → import 48 guide thành draft/unassigned → deploy màn triage → stakeholder phân loại 48/48. **Chưa publish release.**
 
-### Batch 2 — Portal + recorder shell
+### Batch 2A — Portal: login · import · triage (đã code, chờ QA localhost)
 
-CRUD guide/step · recorder Portal↔Extension · preview draft · repair queue · tích hợp Web Store draft ID · deploy production hostname cố định.
+Next.js 16 App Router + `@supabase/ssr` cookie session + `proxy.ts`. Ba màn: `/guides`,
+`/guides/import`, `/guides/triage`. Import **tính lại** `contentChecksum` từ nội dung file
+và truyền giá trị tính lại vào `p_checksum`. Triage gọi `admin_assign_guide_site`, counter
+cập nhật tại chỗ; "áp dụng gợi ý độ tin cao" luôn hiện danh sách trước khi xác nhận.
+Phân quyền: `requireAdmin()` phía server trên từng page; `proxy.ts` chỉ redirect thô.
+Checklist: `docs/QA_LOCALHOST_2A.md`.
+
+### Batch 2B — Guide editor + recorder
+
+CRUD guide/step · `p_expected_updated_at` + xử lý `40001` · repair queue theo flag · preview draft · recorder Portal↔Extension.
 
 ### Batch 3 — Viewer + sync + UI adapter
 

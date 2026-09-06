@@ -11,12 +11,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
+          cache: pnpm
 
-      # No dependencies to install yet: packages/guide-schema is dependency-free and
-      # Node 24 runs its TypeScript directly. apps/* will add a pnpm install step.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # packages/ and scripts/ are dependency-free and run on Node 24 directly.
       - name: Syntax gate
         run: node scripts/check-syntax.mjs
 
@@ -24,3 +31,14 @@ jobs:
       # fixture: the production export contains customer data and is not in the repo.
       - name: Unit tests
         run: node --test "packages/guide-schema/tests/*.test.mjs" "scripts/import-legacy/*.test.mjs"
+
+      # Admin Portal: pure logic tests, typecheck, and a real production build. The
+      # build needs no Supabase credentials - env is only read at request time.
+      - name: Admin Portal tests
+        run: pnpm --filter admin test
+
+      - name: Admin Portal typecheck
+        run: pnpm --filter admin typecheck
+
+      - name: Admin Portal build
+        run: pnpm --filter admin build

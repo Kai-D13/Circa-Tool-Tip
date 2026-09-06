@@ -17,7 +17,9 @@ import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "out", "data"]);
+// apps/* are Next.js projects: their .ts/.tsx import framework modules that plain Node
+// cannot load, and they have their own gate (`tsc --noEmit` + `next build`).
+const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "out", "data", "apps"]);
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir)) {

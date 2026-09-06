@@ -12,15 +12,16 @@ Google Apps Script). **Không sửa repo cũ** — nó vẫn đang chạy produc
 |---|---|---|
 | Bước 0 | Plan v1.1 sau audit | Xong — [`docs/IMPLEMENTATION_PLAN_v1.1.md`](docs/IMPLEMENTATION_PLAN_v1.1.md) |
 | 1A | Monorepo, guide-schema v5, unit test, legacy importer, migration files | Xong |
-| 1B | Chạy migration, import 48 guide, màn triage | Chờ stakeholder chạy migration |
-| 2 | Admin Portal + recorder | Chưa bắt đầu |
+| 1B | Chạy migration 0001–0004 + RPC test + seed | Xong — `ALL GUIDE RPC TESTS PASSED` trên project thật |
+| 2A | Admin Portal: login · import · triage | Code xong, chờ QA localhost — [`docs/QA_LOCALHOST_2A.md`](docs/QA_LOCALHOST_2A.md) |
+| 2B | Guide editor + recorder | Chưa bắt đầu |
 | 3 | Extension viewer + sync + UI adapter | Chưa bắt đầu |
 | 4 | QA 2 pha + Chrome Web Store Unlisted | Chưa bắt đầu |
 
 ## Cấu trúc
 
 ```
-apps/admin/            Next.js 16 Admin Portal          (Batch 2)
+apps/admin/            Next.js 16 Admin Portal          (2A: login/import/triage)
 apps/extension/        Chrome MV3                        (Batch 3)
 packages/guide-schema/ Schema v5 + validator + URL matcher + checksum + flags
 scripts/import-legacy/ Importer v4 -> v5
@@ -31,9 +32,9 @@ docs/                  Plan, import report, migration runbook
 
 ## Yêu cầu
 
-Node 24 (xem `.node-version`), pnpm 10. Chưa có dependency nào: `packages/guide-schema`
-viết bằng TypeScript nhưng Node 24 chạy trực tiếp bằng type-stripping, nên không cần
-transpiler cho tới khi Batch 2 thêm Next.js.
+Node 24 (xem `.node-version`), pnpm 10. `packages/guide-schema` và `scripts/` không có
+dependency (Node 24 chạy TypeScript trực tiếp). `apps/admin` là Next.js 16 — cần
+`pnpm install`.
 
 ## Lệnh
 
@@ -41,6 +42,11 @@ transpiler cho tới khi Batch 2 thêm Next.js.
 node scripts/check-syntax.mjs                            # mọi file runtime phải parse
 node --test "packages/guide-schema/tests/*.test.mjs"     # unit test
 node scripts/import-legacy/cli.mjs                       # chạy lại importer
+
+pnpm --filter admin test          # 30 test logic thuần (import checksum, triage, route policy, no-secrets)
+pnpm --filter admin typecheck
+pnpm --filter admin build
+pnpm --filter admin dev           # cần apps/admin/.env.local, xem docs/QA_LOCALHOST_2A.md
 ```
 
 Importer đọc file export v4 và ghi ra `data/legacy-import.v5.json` +
@@ -60,8 +66,12 @@ Importer đọc file export v4 và ghi ra `data/legacy-import.v5.json` +
   nội bộ cho ~25 máy POS; thêm bảng là thêm chỗ sai.
 - **Flag không chặn publish.** Chúng nuôi repair queue và cảnh báo trên Portal; quyết
   định là của Admin (Plan v1.1 §P0-7).
-- **SQL trong `supabase/` chưa từng được chạy.** Máy dev không có Postgres; lần chạy đầu
-  ở Batch 1B là lần verify. Theo đúng [`docs/MIGRATION_RUNBOOK.md`](docs/MIGRATION_RUNBOOK.md).
+- **Migration `0001–0004` là baseline đã áp dụng trên Supabase.** Không sửa lại; thay đổi
+  DB mới đi qua `0005+`. Mọi hàm chạy với `search_path = public`: chỉ gọi hàm ở
+  `pg_catalog`, `public`, hoặc kèm schema tường minh.
+- **Portal chỉ có hai biến môi trường**, cả hai đều public (`.env.example`). Phân quyền
+  thật nằm ở `requireAdmin()` phía server + RLS; `proxy.ts` chỉ refresh session và
+  redirect thô.
 
 ## Tài nguyên
 

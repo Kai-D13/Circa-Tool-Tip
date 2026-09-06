@@ -11,3 +11,7 @@ Thumbs.db
 .vercel
 *.pem
 *.zip
+
+# Next.js
+apps/*/.next/
+*.tsbuildinfo
