@@ -61,8 +61,12 @@ export function ImportPanel() {
     <div className="stack">
       <div className="card stack">
         <div className="field">
-          <label className="label" htmlFor="artifact">File artifact (<span className="mono">data/legacy-import.v5.json</span>)</label>
+          <label className="label" htmlFor="artifact">File artifact</label>
           <input id="artifact" type="file" accept="application/json,.json" onChange={onPick} />
+          <small className="muted">
+            Chỉ chọn artifact v5 trong thư mục <span className="mono">data</span> của repo
+            (<span className="mono">data/legacy-import.v5.json</span>). Không chọn file export gốc trong Downloads.
+          </small>
         </div>
         <div className="row">
           <button className="btn" type="button" onClick={onCheck} disabled={!fileText || phase === "importing"}>
@@ -79,27 +83,37 @@ export function ImportPanel() {
         </div>
       </div>
 
-      {s ? (
+      {check ? (
         <div className="card stack">
           <strong>Kết quả kiểm tra</strong>
-          <table className="table">
-            <tbody>
-              <tr><th>File</th><td>{s.filename}</td></tr>
-              <tr><th>Loại</th><td className="mono">{s.type}</td></tr>
-              <tr><th>schemaVersion</th><td>{s.schemaVersion}</td></tr>
-              <tr><th>Guide / Step</th><td><strong>{s.guides} / {s.steps}</strong></td></tr>
-              <tr><th>sourceFileSha256</th><td className="mono">{s.sourceFileSha256 || "—"}</td></tr>
-              <tr><th>contentChecksum trong file</th><td className="mono">{s.embeddedChecksum || "—"}</td></tr>
-              <tr><th>contentChecksum tính lại</th><td className="mono">{s.computedChecksum}</td></tr>
-            </tbody>
-          </table>
-          {check?.ok ? (
+          {s ? (
+            <table className="table">
+              <tbody>
+                <tr><th>File</th><td>{s.filename}</td></tr>
+                <tr><th>Loại</th><td className="mono">{s.type}</td></tr>
+                <tr><th>schemaVersion</th><td>{s.schemaVersion ?? "—"}</td></tr>
+                <tr><th>Guide / Step</th><td><strong>{s.guides} / {s.steps}</strong></td></tr>
+                <tr><th>sourceFileSha256</th><td className="mono">{s.sourceFileSha256 || "—"}</td></tr>
+                <tr><th>contentChecksum trong file</th><td className="mono">{s.embeddedChecksum || "—"}</td></tr>
+                <tr><th>contentChecksum tính lại</th><td className="mono">{s.computedChecksum}</td></tr>
+              </tbody>
+            </table>
+          ) : (
+            // A file we could not summarise at all (bad JSON, or the legacy v4 export).
+            // The error list below must still be shown, so it lives outside this branch.
+            <table className="table">
+              <tbody>
+                <tr><th>File</th><td>{filename}</td></tr>
+              </tbody>
+            </table>
+          )}
+          {check.ok ? (
             <div className="alert alert-success">File hợp lệ, checksum khớp. Có thể import.</div>
           ) : (
             <div className="alert alert-danger">
-              <div><strong>File không hợp lệ:</strong></div>
+              <div><strong>File không dùng được:</strong></div>
               <ul style={{ margin: "4px 0 0 18px" }}>
-                {check?.errors.map((e) => <li key={e}>{e}</li>)}
+                {check.errors.map((e) => <li key={e}>{e}</li>)}
               </ul>
             </div>
           )}

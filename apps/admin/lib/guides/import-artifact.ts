@@ -1,4 +1,4 @@
-import { SCHEMA_VERSION, canonicalJson, sha256Tagged } from "@circa/guide-schema";
+import { LEGACY_ENVELOPE_TYPE, SCHEMA_VERSION, canonicalJson, sha256Tagged } from "@circa/guide-schema";
 
 /**
  * Validation of the legacy import artifact (data/legacy-import.v5.json) BEFORE it is
@@ -19,7 +19,8 @@ export const EXPECTED_LEGACY = { guides: 48, steps: 409 };
 export interface ArtifactSummary {
   filename: string;
   type: string;
-  schemaVersion: number;
+  /** null when the field is missing or not an integer — never NaN. */
+  schemaVersion: number | null;
   guides: number;
   steps: number;
   sourceFileSha256: string;
@@ -57,10 +58,38 @@ export async function checkArtifact(
   }
 
   const type = String(parsed._type ?? "");
+
+  // The most likely mistake is picking the original v4 export out of Downloads instead
+  // of the converted artifact. Say exactly that instead of listing seven derived errors.
+  if (type === LEGACY_ENVELOPE_TYPE) {
+    return {
+      ok: false,
+      errors: [
+        "Đây là file export legacy v4, không phải artifact đã chuyển đổi. " +
+          "Hãy chọn data/legacy-import.v5.json trong repo.",
+      ],
+      summary: null,
+      payload: null,
+    };
+  }
+
   if (type !== ARTIFACT_TYPE) errors.push(`_type là "${type}", cần "${ARTIFACT_TYPE}".`);
 
-  const schemaVersion = Number(parsed.schemaVersion);
-  if (schemaVersion !== SCHEMA_VERSION) errors.push(`schemaVersion là ${parsed.schemaVersion}, cần ${SCHEMA_VERSION}.`);
+  // Number(undefined) is NaN, which then renders as "NaN" in the UI. Accept an integer
+  // and nothing else; anything invalid becomes null.
+  const schemaVersion =
+    typeof parsed.schemaVersion === "number" && Number.isInteger(parsed.schemaVersion)
+      ? parsed.schemaVersion
+      : null;
+  if (schemaVersion === null) {
+    errors.push(
+      parsed.schemaVersion === undefined
+        ? "Thiếu schemaVersion."
+        : `schemaVersion phải là số nguyên, nhận ${JSON.stringify(parsed.schemaVersion)}.`,
+    );
+  } else if (schemaVersion !== SCHEMA_VERSION) {
+    errors.push(`schemaVersion là ${schemaVersion}, cần ${SCHEMA_VERSION}.`);
+  }
 
   const guides = Array.isArray(parsed.guides) ? (parsed.guides as unknown[]) : null;
   if (!guides) errors.push("Thiếu mảng guides.");
