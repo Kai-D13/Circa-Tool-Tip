@@ -28,6 +28,9 @@ export default async function GuidesPage() {
       </p>
       <div className="stack">
         <StatusSummary counts={result.counts} />
+        <div className="row">
+          <Link className="btn btn-primary" href="/guides/new">+ Tạo bộ mới</Link>
+        </div>
         <GuideList guides={result.guides} />
       </div>
     </AppShell>

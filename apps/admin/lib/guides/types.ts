@@ -73,3 +73,36 @@ export interface AssignResult {
   site: string;
   unassignedRemaining: number;
 }
+
+/** The full row returned by admin_get_guide, including the editable draft. */
+export interface GuideDetailRow extends GuideRow {
+  draft_steps: unknown[];
+  created_at: string;
+  created_by_email: string | null;
+  updated_by_email: string | null;
+}
+
+export interface GuideDetailResult {
+  ok: boolean;
+  guide: GuideDetailRow;
+  /** First reason this guide cannot go into a release, or null. From guide_publish_error(). */
+  publishError: string | null;
+}
+
+export interface UpsertGuideResult {
+  ok: boolean;
+  guideId: string;
+}
+
+export interface SaveStepsResult {
+  ok: boolean;
+  guideId: string;
+  stepCount: number;
+  /** New updated_at — the caller must keep it for the next optimistic save. */
+  updatedAt: string;
+}
+
+export interface SiteOption {
+  code: string;
+  label: string;
+}

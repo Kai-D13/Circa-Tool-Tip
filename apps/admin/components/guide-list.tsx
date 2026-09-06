@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import type { GuideRow } from "../lib/guides/types";
 
 function SiteChip({ site }: { site: string | null }) {
@@ -34,7 +36,7 @@ export function GuideList({ guides }: { guides: GuideRow[] }) {
           {guides.map((g, i) => (
             <tr key={g.id}>
               <td className="muted">{i + 1}</td>
-              <td>{g.name}</td>
+              <td><Link href={`/guides/${g.id}`}>{g.name}</Link></td>
               <td><SiteChip site={g.site_code} /></td>
               <td>{g.group_name || <span className="muted">—</span>}</td>
               <td>{g.step_count}</td>

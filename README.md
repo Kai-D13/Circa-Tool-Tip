@@ -13,8 +13,10 @@ Google Apps Script). **Không sửa repo cũ** — nó vẫn đang chạy produc
 | Bước 0 | Plan v1.1 sau audit | Xong — [`docs/IMPLEMENTATION_PLAN_v1.1.md`](docs/IMPLEMENTATION_PLAN_v1.1.md) |
 | 1A | Monorepo, guide-schema v5, unit test, legacy importer, migration files | Xong |
 | 1B | Chạy migration 0001–0004 + RPC test + seed | Xong — `ALL GUIDE RPC TESTS PASSED` trên project thật |
-| 2A | Admin Portal: login · import · triage | Code xong, chờ QA localhost — [`docs/QA_LOCALHOST_2A.md`](docs/QA_LOCALHOST_2A.md) |
-| 2B | Guide editor + recorder | Chưa bắt đầu |
+| 2A | Admin Portal: login · import · triage | Xong — 48 guide / 409 step / 0 unassigned / POS 13 + Admin 35 |
+| 2B.1 | Guide editor (metadata, step CRUD, validate, conflict 40001) | Code xong, chờ QA — [`docs/QA_LOCALHOST_2B1.md`](docs/QA_LOCALHOST_2B1.md) |
+| 2B.2 | Recorder + preview draft (extension MV3) | Chưa bắt đầu |
+| 2B.3 | Publish / release / rollback | Chưa bắt đầu |
 | 3 | Extension viewer + sync + UI adapter | Chưa bắt đầu |
 | 4 | QA 2 pha + Chrome Web Store Unlisted | Chưa bắt đầu |
 
@@ -43,7 +45,7 @@ node scripts/check-syntax.mjs                            # mọi file runtime ph
 node --test "packages/guide-schema/tests/*.test.mjs"     # unit test
 node scripts/import-legacy/cli.mjs                       # chạy lại importer
 
-pnpm --filter admin test          # 30 test logic thuần (import checksum, triage, route policy, no-secrets)
+pnpm --filter admin test          # 71 test logic thuần (import, triage, editor, RPC mapping, no-secrets)
 pnpm --filter admin typecheck
 pnpm --filter admin build
 pnpm --filter admin dev           # cần apps/admin/.env.local, xem docs/QA_LOCALHOST_2A.md
