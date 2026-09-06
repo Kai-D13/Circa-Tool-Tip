@@ -59,11 +59,11 @@ Ghi lại nguyên văn JSON kết quả RPC ở 2.4.
 | # | Thao tác | Kỳ vọng | Kết quả |
 |---|---|---|---|
 | 3.1 | `/guides/triage` | Counter **Đã phân loại 0/48**; 4 bộ "không gợi ý được" nằm đầu: IN TEM SẢN PHẨM, THAO TÁC IN TEM GIÁ, XUẤT BÁO CÁO BÁN HÀNG, TẠO PHẢN HỒI TICKET | |
-| 3.2 | Chọn POS/Admin cho 1 bộ, nhập nhóm, **Xác nhận phân loại** | Counter **1/48** ngay, không reload; thẻ chuyển "Đã phân loại" | |
+| 3.2 | Chọn **một trong bốn bộ "không gợi ý được"** (sau khi bạn đã xác định site thật của nó), chọn POS/Admin, nhập nhóm, **Xác nhận phân loại** | Counter **1/48** ngay, không reload; thẻ **rời khỏi** hàng chờ "Chưa phân loại" (bộ lọc mặc định). Chuyển bộ lọc sang POS/Admin/Tất cả thì thấy thẻ đã gán, nút ghi "Đã phân loại" | |
 | 3.3 | Bộ lọc "Hiển thị: POS" | Chỉ thấy bộ vừa gán (nếu chọn POS) | |
 | 3.4 | Tìm "voucher" | Chỉ các bộ có chữ voucher (không phân biệt dấu) | |
-| 3.5 | **Áp dụng gợi ý độ tin cao (39)** | Hiện bảng 39 bộ + site sẽ gán **trước** khi xác nhận; huỷ được | |
-| 3.6 | (chưa làm ở bước này) Xác nhận gán hàng loạt | Chỉ làm sau khi tôi audit kết quả 3.1–3.5 | |
+| 3.5 | **Áp dụng gợi ý độ tin cao (39)** | Hiện bảng 39 bộ + site sẽ gán **trước** khi xác nhận; huỷ được. Số 39 chỉ đúng nếu 3.2 đã gán một bộ *không rõ* — gán nhầm một bộ độ tin cao thì ở đây chỉ còn 38 | |
+| 3.6 | (chưa làm ở bước này) Xác nhận gán hàng loạt | Chỉ làm sau khi audit 3.1–3.5. Khi làm: có tiến độ **Đã xử lý x/39**; nếu một bộ lỗi, hộp kết quả **không đóng**, nêu rõ đã gán bao nhiêu / bộ nào lỗi / còn bao nhiêu, và có nút **Thử lại N bộ còn lại** chỉ chạy lại bộ còn chưa phân loại | |
 
 ## 4. Import lại không ghi đè
 

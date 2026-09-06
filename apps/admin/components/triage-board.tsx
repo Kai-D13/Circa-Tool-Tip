@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 
+import { retryTargets, runBulkAssign, type BulkResult } from "../lib/guides/bulk-assign";
 import { rpcAssignSite } from "../lib/guides/rpc";
 import {
   DEFAULT_FILTER,
@@ -16,13 +17,29 @@ import type { GuideRow } from "../lib/guides/types";
 import { createClient } from "../lib/supabase/client";
 import { TriageCard } from "./triage-card";
 
+/**
+ * Bulk apply is N sequential RPCs, so a failure at item N leaves 1..N-1 committed.
+ * The panel therefore never closes on failure: it shows what succeeded, what failed and
+ * what is still pending, and "retry" only targets guides still unassigned.
+ */
+interface BulkState {
+  phase: "preview" | "running" | "result";
+  /** Frozen at the moment the operator confirmed. Retry derives from this. */
+  snapshot: GuideRow[];
+  /** What the current run is processing (snapshot, or the retry subset). */
+  targets: GuideRow[];
+  done: number;
+  result: BulkResult | null;
+  /** Ids assigned across ALL runs of this panel, for the final summary. */
+  succeededTotal: string[];
+}
+
 export function TriageBoard({ initialGuides }: { initialGuides: GuideRow[] }) {
   const [guides, setGuides] = useState<GuideRow[]>(initialGuides);
   const [filter, setFilter] = useState<TriageFilter>(DEFAULT_FILTER);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [bulkPreview, setBulkPreview] = useState(false);
-  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulk, setBulk] = useState<BulkState | null>(null);
 
   const progress = progressOf(guides);
   const visible = useMemo(() => unknownFirst(filterGuides(guides, filter)), [guides, filter]);
@@ -42,22 +59,34 @@ export function TriageBoard({ initialGuides }: { initialGuides: GuideRow[] }) {
     }
   }
 
-  async function applyBulk() {
-    setBulkBusy(true);
-    setError(null);
+  function openBulk() {
+    setBulk({ phase: "preview", snapshot: suggestions, targets: suggestions, done: 0, result: null, succeededTotal: [] });
+  }
+
+  async function runBulk(targets: GuideRow[], previous: BulkState) {
+    setBulk({ ...previous, phase: "running", targets, done: 0, result: null });
     const supabase = createClient();
-    for (const g of suggestions) {
-      const site = g.site_guess as "pos" | "admin";
-      try {
+    // Local state is updated per success so a mid-run failure leaves the list truthful.
+    let latest = guides;
+    const result = await runBulkAssign(
+      targets,
+      async (g, site) => {
         await rpcAssignSite(supabase, g.id, site, g.group_name || "");
-        setGuides((prev) => applyAssignment(prev, g.id, site, g.group_name || ""));
-      } catch (err) {
-        setError(`${g.name}: ${err instanceof Error ? err.message : String(err)}`);
-        break;
-      }
-    }
-    setBulkBusy(false);
-    setBulkPreview(false);
+        latest = applyAssignment(latest, g.id, site, g.group_name || "");
+        setGuides(latest);
+      },
+      (done) => setBulk((b) => (b ? { ...b, done } : b)),
+    );
+    setBulk((b) =>
+      b
+        ? { ...b, phase: "result", result, succeededTotal: [...b.succeededTotal, ...result.succeeded] }
+        : b,
+    );
+  }
+
+  function retryBulk(current: BulkState) {
+    const again = retryTargets(current.snapshot, guides);
+    void runBulk(again, current);
   }
 
   const pct = progress.total ? Math.round((progress.assigned / progress.total) * 100) : 0;
@@ -99,20 +128,23 @@ export function TriageBoard({ initialGuides }: { initialGuides: GuideRow[] }) {
           <label className="label" htmlFor="f-q">Tìm theo tên</label>
           <input id="f-q" className="input" placeholder="vd: voucher" value={filter.query} onChange={(e) => setFilter({ ...filter, query: e.target.value })} />
         </div>
-        <button className="btn" type="button" disabled={!suggestions.length || bulkBusy} onClick={() => setBulkPreview(true)}>
+        <button className="btn" type="button" disabled={!suggestions.length || bulk !== null} onClick={openBulk}>
           Áp dụng gợi ý độ tin cao ({suggestions.length})
         </button>
       </div>
 
-      {bulkPreview ? (
+      {bulk?.phase === "preview" ? (
         <div className="card stack" role="dialog" aria-labelledby="bulk-title">
-          <strong id="bulk-title">Sẽ gán {suggestions.length} bộ theo gợi ý độ tin cao</strong>
-          <p className="muted" style={{ margin: 0 }}>Chỉ gợi ý độ tin cao được áp dụng hàng loạt. Bộ độ tin vừa/thấp/không rõ vẫn phải phân loại tay.</p>
+          <strong id="bulk-title">Sẽ gán {bulk.snapshot.length} bộ theo gợi ý độ tin cao</strong>
+          <p className="muted" style={{ margin: 0 }}>
+            Chỉ gợi ý độ tin cao được áp dụng hàng loạt; bộ độ tin vừa/thấp/không rõ vẫn phân loại tay.
+            Các bộ được gán lần lượt — nếu một bộ lỗi, những bộ trước đó đã được ghi và bạn sẽ thấy rõ còn bao nhiêu.
+          </p>
           <div className="table-wrap">
             <table className="table">
               <thead><tr><th>Tên bộ</th><th>Sẽ gán</th><th>Bước</th></tr></thead>
               <tbody>
-                {suggestions.map((g) => (
+                {bulk.snapshot.map((g) => (
                   <tr key={g.id}>
                     <td>{g.name}</td>
                     <td><span className={`chip ${g.site_guess === "pos" ? "chip-pos" : "chip-admin"}`}>{g.site_guess === "pos" ? "POS" : "Admin"}</span></td>
@@ -123,9 +155,56 @@ export function TriageBoard({ initialGuides }: { initialGuides: GuideRow[] }) {
             </table>
           </div>
           <div className="row">
-            <button className="btn btn-primary" type="button" onClick={applyBulk} disabled={bulkBusy}>{bulkBusy ? "Đang gán…" : "Xác nhận gán hàng loạt"}</button>
-            <button className="btn" type="button" onClick={() => setBulkPreview(false)} disabled={bulkBusy}>Huỷ</button>
+            <button className="btn btn-primary" type="button" onClick={() => void runBulk(bulk.snapshot, bulk)}>Xác nhận gán hàng loạt</button>
+            <button className="btn" type="button" onClick={() => setBulk(null)}>Huỷ</button>
           </div>
+        </div>
+      ) : null}
+
+      {bulk?.phase === "running" ? (
+        <div className="card stack" role="status" aria-live="polite">
+          <strong>Đang gán hàng loạt…</strong>
+          <div>Đã xử lý <strong>{bulk.done}/{bulk.targets.length}</strong></div>
+          <div className="progress-bar" aria-hidden="true">
+            <div className="progress-fill" style={{ width: `${bulk.targets.length ? Math.round((bulk.done / bulk.targets.length) * 100) : 0}%` }} />
+          </div>
+        </div>
+      ) : null}
+
+      {bulk?.phase === "result" && bulk.result ? (
+        <div className="card stack" role="dialog" aria-labelledby="bulk-result-title">
+          {bulk.result.failed ? (
+            <>
+              <strong id="bulk-result-title" style={{ color: "var(--danger)" }}>Gán hàng loạt dừng lại vì một bộ lỗi</strong>
+              <div className="alert alert-danger">
+                <div><strong>{bulk.result.failed.name}</strong></div>
+                <div className="mono">{bulk.result.failed.message}</div>
+              </div>
+              <table className="table">
+                <tbody>
+                  <tr><th>Đã gán thành công (lần này)</th><td>{bulk.result.succeeded.length}</td></tr>
+                  <tr><th>Đã gán thành công (tất cả các lần)</th><td>{bulk.succeededTotal.length}/{bulk.snapshot.length}</td></tr>
+                  <tr><th>Còn chưa phân loại trong nhóm này</th><td><strong>{retryTargets(bulk.snapshot, guides).length}</strong></td></tr>
+                </tbody>
+              </table>
+              <div className="row">
+                <button className="btn btn-primary" type="button" onClick={() => retryBulk(bulk)} disabled={retryTargets(bulk.snapshot, guides).length === 0}>
+                  Thử lại {retryTargets(bulk.snapshot, guides).length} bộ còn lại
+                </button>
+                <button className="btn" type="button" onClick={() => setBulk(null)}>Đóng</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <strong id="bulk-result-title" style={{ color: "var(--success)" }}>Gán hàng loạt hoàn tất</strong>
+              <div className="alert alert-success">
+                Đã gán <strong>{bulk.succeededTotal.length}/{bulk.snapshot.length}</strong> bộ theo gợi ý. Còn {progressOf(guides).unassigned} bộ cần phân loại tay.
+              </div>
+              <div className="row">
+                <button className="btn" type="button" onClick={() => setBulk(null)}>Đóng</button>
+              </div>
+            </>
+          )}
         </div>
       ) : null}
 
@@ -136,7 +215,7 @@ export function TriageBoard({ initialGuides }: { initialGuides: GuideRow[] }) {
       ) : (
         <div className="triage-list">
           {visible.map((g) => (
-            <TriageCard key={g.id} guide={g} busy={busyId === g.id || bulkBusy} onAssign={assign} />
+            <TriageCard key={g.id} guide={g} busy={busyId === g.id || bulk?.phase === "running"} onAssign={assign} />
           ))}
         </div>
       )}
