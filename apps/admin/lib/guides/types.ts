@@ -115,4 +115,6 @@ export interface SaveGuideResult {
 export interface SiteOption {
   code: string;
   label: string;
+  /** scheme + host, no trailing slash. Guides store paths; this is what makes them absolute. */
+  origin: string;
 }

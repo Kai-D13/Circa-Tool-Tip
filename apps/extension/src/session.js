@@ -33,6 +33,8 @@ export const SESSION_ERRORS = {
   SESSION_EXISTS: "SESSION_EXISTS",
   TAB_BUSY: "TAB_BUSY",
   DUPLICATE_TAB: "DUPLICATE_TAB",
+  /** A step arrived from a tab this session is not recording. */
+  TAB_MISMATCH: "TAB_MISMATCH",
 };
 
 export class SessionError extends Error {
@@ -150,11 +152,22 @@ export function createRecorderStore(storage) {
      * Append a captured step. Returns the updated session, or null when the session is
      * gone or already stopped — the caller must treat that as "recording already
      * finished", not as a crash.
+     *
+     * `fromTabId`, when given, must be the tab the session is bound to. Steps arrive
+     * from a content script, and every page the extension runs on can send one: without
+     * this check a second POS tab could append its own clicks into somebody else's
+     * recording, and the operator would only find out when the guide replays wrong.
      */
-    async appendStep(sessionId, step) {
+    async appendStep(sessionId, step, fromTabId) {
       return enqueue(async () => {
         const s = await read(sessionId);
         if (!s || s.status !== "recording") return null;
+        if (fromTabId !== undefined && s.tabId !== fromTabId) {
+          throw new SessionError(
+            SESSION_ERRORS.TAB_MISMATCH,
+            `Phiên ghi "${sessionId}" đang ghi tab ${s.tabId}, không phải tab ${fromTabId}.`,
+          );
+        }
         return write({ ...s, steps: [...s.steps, step] });
       });
     },

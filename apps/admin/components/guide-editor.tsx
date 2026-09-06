@@ -25,6 +25,7 @@ import {
 import { isConflictError, rpcDeleteGuide, rpcSaveGuide, rpcSetGuideStatus } from "../lib/guides/rpc";
 import type { GuideDetailRow, GuideStatus, SiteOption } from "../lib/guides/types";
 import { createClient } from "../lib/supabase/client";
+import { RecorderPanel } from "./recorder-panel";
 import { StepEditor } from "./step-editor";
 
 type Saving = "idle" | "saving" | "saved" | "conflict";
@@ -188,6 +189,19 @@ export function GuideEditor({
           <div className="alert alert-warning"><ul style={{ margin: 0, paddingLeft: 18 }}>{grouped.guide.warnings.map((w) => <li key={w}>{w}</li>)}</ul></div>
         ) : null}
       </div>
+
+      {/* ---------------------------------------------------------- recorder */}
+      {/* Ghi xong chỉ chèn bước vào editor. Không tự ghi Supabase: người duyệt phải
+          nhìn thấy bước ghi được rồi mới bấm "Lưu thay đổi". */}
+      <RecorderPanel
+        guideId={guide.id}
+        siteCode={meta.siteCode}
+        startUrl={meta.startUrl}
+        sites={sites}
+        dirty={dirty}
+        disabled={busy}
+        onInsert={(append) => updateSteps(append(steps))}
+      />
 
       {/* ------------------------------------------------------------ steps */}
       <div className="row" style={{ justifyContent: "space-between" }}>

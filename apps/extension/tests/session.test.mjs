@@ -320,3 +320,36 @@ test("P0: no interleaving of mutations ever produces DUPLICATE_TAB", async () =>
     await assert.doesNotReject(() => store.findByTab(tab), `tab ${tab} bị trùng recorder`);
   }
 });
+
+/* ------------------------------------- 2B.2B: bước chỉ đến từ đúng tab đang ghi */
+
+test("a step is refused when it comes from a tab the session is not recording", async () => {
+  // Every page on pos/admin runs the content script, and any of them can send a message.
+  // Without this check a second POS tab could push its own clicks into somebody else's
+  // recording, and the operator would only find out when the guide replays wrong.
+  const store = createRecorderStore(fakeStorage());
+  await store.start({ ...started, tabId: 7 });
+
+  await assert.rejects(() => store.appendStep("s1", step("a"), 9), (err) => {
+    assert.equal(err.code, SESSION_ERRORS.TAB_MISMATCH);
+    return true;
+  });
+
+  const session = await store.get("s1");
+  assert.deepEqual(session.steps, [], "bước từ tab lạ không được ghi vào");
+});
+
+test("a step from the recorded tab is appended", async () => {
+  const store = createRecorderStore(fakeStorage());
+  await store.start({ ...started, tabId: 7 });
+  const after = await store.appendStep("s1", step("a"), 7);
+  assert.deepEqual(after.steps.map((x) => x.id), ["a"]);
+});
+
+test("omitting the tab keeps the Portal-side callers working", async () => {
+  // undo/stop come from the Portal over the port, where there is no tab to check.
+  const store = createRecorderStore(fakeStorage());
+  await store.start({ ...started, tabId: 7 });
+  const after = await store.appendStep("s1", step("a"));
+  assert.deepEqual(after.steps.map((x) => x.id), ["a"]);
+});

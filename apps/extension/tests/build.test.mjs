@@ -96,6 +96,36 @@ test("the service worker is a module, so it can import the shared schema", () =>
   assert.equal(SRC_MANIFEST.background.type, "module");
 });
 
+test("every script the manifest loads actually parses", () => {
+  // scripts/check-syntax.mjs deliberately skips apps/ (they are Next.js projects with
+  // their own gate), and content.js is a classic script no test can import. Without this
+  // a typo in the recorder only shows up as a silent content script in Chrome.
+  const b = buildTo();
+  try {
+    const scripts = [
+      b.manifest.background.service_worker,
+      ...b.manifest.content_scripts.flatMap((cs) => cs.js ?? []),
+    ];
+    assert.ok(scripts.length >= 4, "manifest phải nạp cả bundle schema, selector và content");
+    for (const rel of scripts) {
+      assert.doesNotThrow(
+        () => execFileSync(process.execPath, ["--check", join(b.out, rel)], { stdio: "pipe" }),
+        `${rel} không parse được`,
+      );
+    }
+  } finally {
+    b.cleanup();
+  }
+});
+
+test("the content script never reaches for a second copy of the schema", () => {
+  // One definition of normalizeText / the URL matcher. A local re-implementation in the
+  // content script is exactly the drift this rebuild exists to remove.
+  const content = readFileSync(resolve(HERE, "../src/content.js"), "utf8");
+  assert.ok(!/function\s+normalizeText/.test(content), "content.js tự định nghĩa normalizeText");
+  assert.ok(content.includes("TG_SELECTOR"), "content.js phải dùng module selector chung");
+});
+
 /* ------------------------------------------------- P0: --out không được xoá nhầm */
 
 test("P0: --out refuses paths whose deletion would take the repo with it", () => {

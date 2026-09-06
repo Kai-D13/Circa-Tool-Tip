@@ -6,7 +6,10 @@ import {
   ONE_SHOT_TYPES,
   PORT_REQUEST_TYPES,
   PROTOCOL_VERSION,
+  CONTENT_COMMANDS,
+  CONTENT_TYPES,
   fail,
+  isAllowedTargetUrl,
   isLoopbackOrigin,
   ok,
   originsFromMatches,
@@ -111,4 +114,54 @@ test("a release build does not accept localhost", () => {
 
 test("garbage senders are refused rather than thrown", () => {
   for (const bad of [null, undefined, "x", 1]) assert.equal(portalSenderOk(bad, ["http://localhost"]), false);
+});
+
+/* ---------------------------------------------- 2B.2B: mở tab để ghi hướng dẫn */
+
+const TARGETS = originsFromMatches(["https://pos.v2.circa.vn/*", "https://admin.v2.circa.vn/*"]);
+
+test("the extension only opens a page it actually runs on", () => {
+  assert.equal(isAllowedTargetUrl("https://pos.v2.circa.vn/trang-chu", TARGETS), true);
+  assert.equal(isAllowedTargetUrl("https://admin.v2.circa.vn/dashboard?a=1#b", TARGETS), true);
+});
+
+test("START cannot turn the extension into an open redirector", () => {
+  // The Portal is trusted to say WHAT to record. It is not trusted to say what the
+  // browser opens: that is a bigger power than the recorder needs.
+  for (const bad of [
+    "https://pos.v2.circa.vn.evil.example/",   // suffix, not the origin
+    "https://evil.example/?x=https://pos.v2.circa.vn",
+    "http://pos.v2.circa.vn/trang-chu",        // plaintext
+    "javascript:alert(1)",
+    "data:text/html,<h1>x",
+    "chrome://settings",
+    "file:///C:/Windows/System32",
+    "",
+    null,
+    undefined,
+    "khong-phai-url",
+  ]) {
+    assert.equal(isAllowedTargetUrl(bad, TARGETS), false, `${String(bad)} phải bị từ chối`);
+  }
+});
+
+test("an empty allow list opens nothing", () => {
+  assert.equal(isAllowedTargetUrl("https://pos.v2.circa.vn/", []), false);
+  assert.equal(isAllowedTargetUrl("https://pos.v2.circa.vn/", undefined), false);
+});
+
+test("content-script messages are a separate namespace from the Portal's", () => {
+  // They are authorised differently — by tab, not by origin — so mixing the two lists
+  // would let a page reach a handler that assumes it is talking to a content script.
+  for (const t of CONTENT_TYPES) assert.ok(!ONE_SHOT_TYPES.includes(t), `${t} không được là message của Portal`);
+  for (const t of CONTENT_TYPES) assert.ok(t.startsWith("tg:"), `${t} phải mang tiền tố tg:`);
+  for (const c of CONTENT_COMMANDS) assert.ok(c.startsWith("tg:"));
+});
+
+test("every session-store failure has a protocol code to report it with", () => {
+  // background.js maps a SessionError code straight onto the wire; a code the protocol
+  // does not know silently degrades to INTERNAL and the Portal cannot react to it.
+  for (const code of ["INVALID_SESSION", "SESSION_EXISTS", "TAB_BUSY", "DUPLICATE_TAB", "TAB_MISMATCH"]) {
+    assert.equal(ERROR_CODES[code], code, `thiếu mã ${code}`);
+  }
 });

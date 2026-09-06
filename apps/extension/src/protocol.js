@@ -32,8 +32,24 @@ export const ERROR_CODES = {
   SESSION_EXISTS: "SESSION_EXISTS",
   TAB_BUSY: "TAB_BUSY",
   DUPLICATE_TAB: "DUPLICATE_TAB",
+  /** A content script tried to write into a session that is recording another tab. */
+  TAB_MISMATCH: "TAB_MISMATCH",
+  /** The Portal asked the extension to open a URL it is not allowed to open. */
+  BAD_URL: "BAD_URL",
   INTERNAL: "INTERNAL",
 };
+
+/**
+ * Messages the CONTENT SCRIPT sends to the service worker (chrome.runtime.sendMessage).
+ *
+ * A separate list from ONE_SHOT_TYPES on purpose: those arrive from the Portal, a web
+ * page, over externally_connectable. These arrive from our own content script and are
+ * authorised differently — by the tab they come from, not by origin alone.
+ */
+export const CONTENT_TYPES = ["tg:hello", "tg:step", "tg:navigated"];
+
+/** Messages the service worker pushes down to a content script. */
+export const CONTENT_COMMANDS = ["tg:disarm"];
 
 export function ok(type, data = {}) {
   return { v: PROTOCOL_VERSION, ok: true, type, data };
@@ -111,4 +127,23 @@ export function portalSenderOk(sender, allowedOrigins) {
   if (!origin) return false;
   if (allowedOrigins.includes(origin)) return true;
   return isLoopbackOrigin(origin) && allowedOrigins.some(isLoopbackOrigin);
+}
+
+/**
+ * True when the extension may open `url` in a new tab on the Portal's request.
+ *
+ * The Portal is trusted enough to talk to the extension, but "open any URL you like" is
+ * a bigger power than the recorder needs: the only pages worth recording are the ones
+ * the content script runs on. Checking against host_permissions keeps a compromised or
+ * mistaken Portal from turning the extension into an open redirector.
+ */
+export function isAllowedTargetUrl(url, allowedOrigins) {
+  let parsed;
+  try {
+    parsed = new URL(String(url || ""));
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  return (allowedOrigins || []).includes(parsed.origin);
 }
