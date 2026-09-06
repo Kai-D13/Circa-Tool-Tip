@@ -99,6 +99,23 @@ test("retry runs only guides still unassigned and never re-sends a success", asy
   assert.equal(state.filter((g) => g.status === "unassigned").length, 0);
 });
 
+test("a guide triaged by hand after the snapshot was taken is never sent to the RPC", async () => {
+  const snapshot = [guide(), guide(), guide()];
+  // The operator opened the preview, then assigned the middle guide manually to a site
+  // that differs from its suggestion. Bulk must not overwrite that decision.
+  const current = applyAssignment(snapshot, snapshot[1].id, "admin", "Quản trị");
+
+  const targets = retryTargets(snapshot, current);
+  assert.deepEqual(targets.map((g) => g.id), [snapshot[0].id, snapshot[2].id]);
+
+  const sent = [];
+  const r = await runBulkAssign(targets, async (g) => { sent.push(g.id); });
+  assert.ok(!sent.includes(snapshot[1].id), "bộ đã phân loại tay không được gọi RPC");
+  assert.deepEqual(sent, [snapshot[0].id, snapshot[2].id]);
+  assert.equal(r.failed, null);
+  assert.equal(current.find((g) => g.id === snapshot[1].id).site_code, "admin", "quyết định tay được giữ nguyên");
+});
+
 test("retryTargets on a fully completed snapshot is empty", () => {
   const snapshot = [guide(), guide()];
   const done = snapshot.map((g) => ({ ...g, status: "draft", site_code: "pos" }));

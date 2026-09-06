@@ -128,7 +128,14 @@ export function TriageBoard({ initialGuides }: { initialGuides: GuideRow[] }) {
           <label className="label" htmlFor="f-q">Tìm theo tên</label>
           <input id="f-q" className="input" placeholder="vd: voucher" value={filter.query} onChange={(e) => setFilter({ ...filter, query: e.target.value })} />
         </div>
-        <button className="btn" type="button" disabled={!suggestions.length || bulk !== null} onClick={openBulk}>
+        <button
+          className="btn"
+          type="button"
+          // Also locked while a single-card assignment is in flight, so the snapshot
+          // cannot be taken over a list that is about to change.
+          disabled={!suggestions.length || bulk !== null || busyId !== null}
+          onClick={openBulk}
+        >
           Áp dụng gợi ý độ tin cao ({suggestions.length})
         </button>
       </div>
@@ -155,7 +162,16 @@ export function TriageBoard({ initialGuides }: { initialGuides: GuideRow[] }) {
             </table>
           </div>
           <div className="row">
-            <button className="btn btn-primary" type="button" onClick={() => void runBulk(bulk.snapshot, bulk)}>Xác nhận gán hàng loạt</button>
+            <button
+              className="btn btn-primary"
+              type="button"
+              // Recompute against current state rather than replaying the snapshot: a
+              // guide that left `unassigned` since the preview opened must never be
+              // overwritten by its old suggestion.
+              onClick={() => void runBulk(retryTargets(bulk.snapshot, guides), bulk)}
+            >
+              Xác nhận gán hàng loạt
+            </button>
             <button className="btn" type="button" onClick={() => setBulk(null)}>Huỷ</button>
           </div>
         </div>
@@ -215,7 +231,9 @@ export function TriageBoard({ initialGuides }: { initialGuides: GuideRow[] }) {
       ) : (
         <div className="triage-list">
           {visible.map((g) => (
-            <TriageCard key={g.id} guide={g} busy={busyId === g.id || bulk?.phase === "running"} onAssign={assign} />
+            // Every card is locked for the whole bulk flow, not just while it runs:
+            // assigning by hand with the preview open would desync the snapshot.
+            <TriageCard key={g.id} guide={g} busy={busyId === g.id || bulk !== null} onAssign={assign} />
           ))}
         </div>
       )}
