@@ -3,8 +3,11 @@
  *
  * Uses WebCrypto (`globalThis.crypto.subtle`) rather than node:crypto so the exact same
  * code runs in the importer (Node 24), the portal (browser) and the extension service
- * worker. The extension recomputes this checksum before swapping a release in, so the
- * three implementations must agree byte for byte — hence one shared module.
+ * worker.
+ *
+ * Scope: content that a CLIENT owns and can hash consistently — today that is the legacy
+ * import artifact. RELEASE checksums are computed server-side in SQL and are NOT
+ * recomputed here; see the note at the bottom of this file for why.
  */
 
 /**

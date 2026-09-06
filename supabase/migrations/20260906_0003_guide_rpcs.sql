@@ -1,3 +1,5 @@
+begin;
+
 -- =============================================================================
 -- Circa Tool-tip · 0003 · Guide RPC (import, triage, CRUD)
 --
@@ -7,6 +9,10 @@
 --   * type gate jsonb dùng `is distinct from`
 --   * revoke from public, grant execute cho đúng role cần
 -- =============================================================================
+--
+-- Chạy trọn trong một transaction: dừng giữa chừng thì không để lại trạng thái
+-- nửa vời. (SQL Editor có thể cảnh báo "transaction already in progress" — vô hại.)
+
 
 create or replace function public.require_admin()
 returns void
@@ -70,9 +76,16 @@ begin
   end if;
 
   -- Người gọi phải nói trước họ nghĩ mình đang import cái gì, và điều đó phải khớp với
-  -- checksum nhúng trong chính artifact. Nếu không, ta đang import một file khác.
-  if p_checksum is not null and length(trim(p_checksum)) > 0
-     and (p_payload ->> 'contentChecksum') is distinct from p_checksum then
+  -- checksum nhúng trong chính artifact. BẮT BUỘC: truyền null sẽ không bỏ qua được
+  -- kiểm tra, vì đây chính là thứ chứng minh ta đang import đúng file.
+  if p_checksum is null or length(trim(p_checksum)) = 0 then
+    raise exception 'Thiếu p_checksum — phải truyền contentChecksum của artifact'
+      using errcode = '22023';
+  end if;
+  if p_checksum !~ '^sha256:[0-9a-f]{64}$' then
+    raise exception 'p_checksum sai định dạng, cần sha256:<64 ký tự hex>' using errcode = '22023';
+  end if;
+  if (p_payload ->> 'contentChecksum') is distinct from p_checksum then
     raise exception 'contentChecksum không khớp: artifact ghi %, tham số truyền vào %',
       coalesce(p_payload ->> 'contentChecksum', '(thiếu)'), p_checksum using errcode = '22023';
   end if;
@@ -136,7 +149,7 @@ begin
         site_evidence = coalesce(v_guide -> 'siteEvidence', '{}'::jsonb),
         updated_by    = auth.uid(),
         updated_by_email = v_email,
-        updated_at    = now()
+        updated_at    = clock_timestamp()
       where id = v_existing_id;
       v_updated := v_updated + 1;
 
@@ -321,7 +334,7 @@ begin
       notes      = p_notes,
       updated_by = auth.uid(),
       updated_by_email = v_email,
-      updated_at = now()
+      updated_at = clock_timestamp()
     where id = p_guide_id
     returning id into v_id;
   end if;
@@ -374,7 +387,7 @@ begin
     validation       = coalesce(p_validation, '{}'::jsonb),
     updated_by       = auth.uid(),
     updated_by_email = v_email,
-    updated_at       = now()
+    updated_at       = clock_timestamp()
   where id = p_guide_id
     and (p_expected_updated_at is null or updated_at = p_expected_updated_at)
   returning updated_at into v_new_time;
@@ -442,7 +455,7 @@ begin
     status     = case when status = 'unassigned' then 'draft'::public.guide_status else status end,
     updated_by = auth.uid(),
     updated_by_email = v_email,
-    updated_at = now()
+    updated_at = clock_timestamp()
   where id = p_guide_id;
 
   return jsonb_build_object(
@@ -493,7 +506,7 @@ begin
 
   update public.guides set
     status = p_status::public.guide_status,
-    updated_by = auth.uid(), updated_by_email = v_email, updated_at = now()
+    updated_by = auth.uid(), updated_by_email = v_email, updated_at = clock_timestamp()
   where id = p_guide_id;
 
   return jsonb_build_object('ok', true, 'guideId', p_guide_id, 'status', p_status);
@@ -533,3 +546,5 @@ $$;
 
 revoke all on function public.admin_delete_guide(uuid) from public;
 grant execute on function public.admin_delete_guide(uuid) to authenticated;
+
+commit;

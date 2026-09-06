@@ -12,7 +12,7 @@ cho ra file y hệt, nếu không thì worktree bẩn sau mỗi lần chạy.
 | `sourceFileSha256` | `8d791365a0b7dda183727ebf64f9148ef76fc2459d3c57d2a8d4d3a09ad7fb3e` |
 | exportedAt | 2026-08-21T11:12:34.694Z |
 | targetDomain gốc | pos.v2.circa.vn |
-| `contentChecksum` | `sha256:b96b5ef5aa6086809b3c4a3ac6dea93bea6a1047a4d697244e777e584b3156ce` |
+| `contentChecksum` | `sha256:35d5c7a1ad21d0e0047ca562d02371e2c02f6e4639484851ecca88fe7d8622e9` |
 
 Ba loại checksum, đừng dùng lẫn:
 
@@ -97,9 +97,9 @@ Matcher v5 neo wildcard vào đầu path (v4 không neo). Đây là toàn bộ p
 | `/tra-hang/*` | 4 |
 | `/danh-sach-lieu-thuoc/*` | 4 |
 | `/quan-ly-cua-hang/*` | 4 |
-| `/sellback/create*` | 2 |
-| `/sellback/eligible*` | 2 |
-| `/sellback/new*` | 2 |
+| `/sellback/create?id=*` | 2 |
+| `/sellback/eligible?pos=*` | 2 |
+| `/sellback/new?id=*` | 2 |
 | `/circa/sellback/*` | 2 |
 | `/tra-hang-ban/*` | 1 |
 | `/quan-ly-combo/*` | 1 |
@@ -223,12 +223,12 @@ click qua bước trước.
 
 | Guide | Bước | urlPattern | navigationUrl | action | Bước trước |
 |---|---:|---|---|---|---|
-| PHIẾU BÁN LẠI- POS | 9 | `/sellback/create*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
-| PHIẾU BÁN LẠI- POS | 10 | `/sellback/create*` | *(trống)* | `highlight` | `auto_click_wait_url` |
-| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 7 | `/sellback/eligible*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
-| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 8 | `/sellback/eligible*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
-| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 9 | `/sellback/new*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
-| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 10 | `/sellback/new*` | *(trống)* | `highlight` | `auto_click_wait_url` |
+| PHIẾU BÁN LẠI- POS | 9 | `/sellback/create?id=*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
+| PHIẾU BÁN LẠI- POS | 10 | `/sellback/create?id=*` | *(trống)* | `highlight` | `auto_click_wait_url` |
+| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 7 | `/sellback/eligible?pos=*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
+| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 8 | `/sellback/eligible?pos=*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
+| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 9 | `/sellback/new?id=*` | *(trống)* | `auto_click_wait_url` | `auto_click_wait_url` |
+| TẠO PHIẾU BÁN LẠI CHO POS TRÊN ADMIN | 10 | `/sellback/new?id=*` | *(trống)* | `highlight` | `auto_click_wait_url` |
 
 ## 10. Bốn cảnh báo selector quá rộng
 

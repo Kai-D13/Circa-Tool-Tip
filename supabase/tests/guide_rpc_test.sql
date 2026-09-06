@@ -65,7 +65,7 @@ on conflict (code) do nothing;
 select public.admin_import_legacy(
   jsonb_build_object(
     'schemaVersion', 5,
-    'contentChecksum', 'sha256:test',
+    'contentChecksum', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     'stats', jsonb_build_object('guides', 2, 'steps', 3),
     'guides', jsonb_build_array(
       jsonb_build_object(
@@ -106,7 +106,7 @@ select public.admin_import_legacy(
     )
   ),
   'test-fixture.json',
-  'sha256:test'
+  'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 );
 
 select pg_temp.expect(
@@ -125,32 +125,44 @@ select pg_temp.expect(
 -- P1: checksum truyền vào phải khớp checksum nhúng trong artifact.
 select pg_temp.expect_reject($$
   select public.admin_import_legacy(
-    jsonb_build_object('schemaVersion', 5, 'contentChecksum', 'sha256:aaa',
+    jsonb_build_object('schemaVersion', 5, 'contentChecksum', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       'stats', jsonb_build_object('guides', 0, 'steps', 0),
       'guides', jsonb_build_array()),
-    'x.json', 'sha256:bbb')
+    'x.json', 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 $$, 'import với checksum lệch phải bị từ chối', '22023');
 
 select pg_temp.expect_reject($$
   select public.admin_import_legacy(
-    jsonb_build_object('schemaVersion', 5,
+    jsonb_build_object('schemaVersion', 5, 'guides', jsonb_build_array()),
+    'x.json', null)
+$$, 'thiếu p_checksum phải bị từ chối', '22023');
+
+select pg_temp.expect_reject($$
+  select public.admin_import_legacy(
+    jsonb_build_object('schemaVersion', 5, 'guides', jsonb_build_array()),
+    'x.json', 'khong-phai-sha256')
+$$, 'p_checksum sai định dạng phải bị từ chối', '22023');
+
+select pg_temp.expect_reject($$
+  select public.admin_import_legacy(
+    jsonb_build_object('schemaVersion', 5, 'contentChecksum', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       'stats', jsonb_build_object('guides', 99, 'steps', 99),
       'guides', jsonb_build_array()),
-    'bad.json', null)
+    'bad.json', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 $$, 'import với stats sai phải bị từ chối', '22023');
 
 select pg_temp.expect_reject($$
   select public.admin_import_legacy(
-    jsonb_build_object('schemaVersion', 5,
+    jsonb_build_object('schemaVersion', 5, 'contentChecksum', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       'guides', jsonb_build_array(jsonb_build_object(
         'legacyId', 'test_bad', 'name', 'BAD', 'startUrl', '/x',
         'steps', jsonb_build_array(jsonb_build_object('id', 'st_x', 'selectors', jsonb_build_array()))))),
-    'bad.json', null)
+    'bad.json', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 $$, 'step thiếu action phải bị từ chối', '22023');
 
 -- Chạy lại import không được nhân bản.
 select public.admin_import_legacy(
-  jsonb_build_object('schemaVersion', 5,
+  jsonb_build_object('schemaVersion', 5, 'contentChecksum', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     'stats', jsonb_build_object('guides', 1, 'steps', 1),
     'guides', jsonb_build_array(jsonb_build_object(
       'legacyId', 'test_guide_b', 'name', 'GUIDE B', 'startUrl', '/tai-khoan',
@@ -159,7 +171,7 @@ select public.admin_import_legacy(
         'matchText', 'Voucher', 'tag', 'a', 'title', 'b1', 'content', 'c1',
         'urlPattern', '/quan-ly-voucher', 'navigationUrl', '/quan-ly-voucher',
         'action', jsonb_build_object('type', 'highlight', 'expectedUrl', '', 'timeoutMs', 0)))))),
-  'test-fixture.json', null);
+  'test-fixture.json', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
 select pg_temp.expect(
   (select count(*) from public.guides where legacy_id = 'test_guide_b') = 1,
@@ -192,13 +204,25 @@ select pg_temp.expect_reject(
 -- =============================================================================
 -- 4. P0-1 - optimistic concurrency phải ATOMIC
 -- =============================================================================
+-- Kịch bản thật: A và B cùng đọc guide, A lưu trước, rồi B lưu bằng timestamp mà B đã
+-- đọc. Phải GIỮ LẠI timestamp thật - dùng một giá trị cứng thì bản SELECT-rồi-UPDATE cũ
+-- cũng "pass" và test chẳng chứng minh được gì.
+--
+-- guides.updated_at ghi bằng clock_timestamp() chứ không phải now(): now() cố định suốt
+-- một transaction, nên hai lần lưu trong cùng transaction sẽ trùng timestamp và phép
+-- kiểm tra xung đột trở nên vô nghĩa.
+create temp table tg_seen (label text primary key, ts timestamptz) on commit drop;
+
+insert into tg_seen
+select 'B_doc_luc_dau', updated_at from public.guides where legacy_id = 'test_guide_a';
+
 select pg_temp.expect_reject(
   format($$ select public.admin_save_guide_steps(%L, '[]'::jsonb, '{}'::jsonb, %L::timestamptz) $$,
          (select id from public.guides where legacy_id = 'test_guide_a'),
          '2000-01-01T00:00:00Z'),
   'ghi đè bằng updated_at cũ phải bị từ chối', '40001');
 
--- Ghi với đúng updated_at hiện tại thì phải thành công...
+-- A lưu trước, bằng đúng timestamp đang có.
 select public.admin_save_guide_steps(
   (select id from public.guides where legacy_id = 'test_guide_a'),
   (select draft_steps from public.guides where legacy_id = 'test_guide_a'),
@@ -209,13 +233,21 @@ select pg_temp.expect(
   (select step_count from public.guides where legacy_id = 'test_guide_a') = 2,
   'lưu với updated_at đúng thì thành công');
 
--- ...và chính timestamp vừa dùng giờ đã cũ, nên lần lưu thứ hai với nó phải hỏng.
--- Đây là điều bản SELECT-rồi-UPDATE cũ không bắt được.
+select pg_temp.expect(
+  (select updated_at from public.guides where legacy_id = 'test_guide_a')
+    > (select ts from tg_seen where label = 'B_doc_luc_dau'),
+  'updated_at thực sự tăng sau khi lưu (clock_timestamp, không phải now)');
+
+-- B lưu bằng timestamp đã đọc lúc đầu -> phải bị từ chối.
 select pg_temp.expect_reject(
   format($$ select public.admin_save_guide_steps(%L, '[]'::jsonb, '{}'::jsonb, %L::timestamptz) $$,
          (select id from public.guides where legacy_id = 'test_guide_a'),
-         '2020-01-01T00:00:00Z'),
-  'timestamp cũ vẫn bị chặn sau khi đã có lần lưu thành công', '40001');
+         (select ts from tg_seen where label = 'B_doc_luc_dau')),
+  'P0-1: lưu bằng timestamp đã đọc trước đó phải bị từ chối', '40001');
+
+select pg_temp.expect(
+  (select step_count from public.guides where legacy_id = 'test_guide_a') = 2,
+  'P0-1: lần lưu bị từ chối không được ghi đè dữ liệu');
 
 select pg_temp.expect_reject(
   format($$ select public.admin_save_guide_steps(%L, '[]'::jsonb, '{}'::jsonb, null) $$,

@@ -34,16 +34,26 @@ const flagsOf = (step) => step.flags || [];
 
 /* ------------------------------------------------------------- scrubUrl unit */
 
-test("P0-4: a record id in the query widens the path instead of being deleted", () => {
+test("P0-4: a record id becomes a wildcard VALUE, keeping the parameter name", () => {
   const r = scrubUrl("/sellback/create?id=98f7f76b-53e0-450c-8843-d557e8145f5a");
-  assert.equal(r.url, "/sellback/create*");
+  assert.equal(r.url, "/sellback/create?id=*");
   assert.equal(r.dynamic, true);
   assert.ok(r.flags.includes(FLAGS.URL_UUID_STRIPPED));
 });
 
 test("P0-4: a store id behaves the same way", () => {
   const r = scrubUrl("/sellback/eligible?pos=e71c515b-38a9-481c-a4f1-84eb640db60d");
-  assert.equal(r.url, "/sellback/eligible*");
+  assert.equal(r.url, "/sellback/eligible?pos=*");
+});
+
+test("P0-4: other parameters survive alongside the wildcarded id", () => {
+  const r = scrubUrl("/sellback/new?id=deb5b23f-eb01-4b3d-bf69-dbaa59f7dbf6&tab=chi-tiet");
+  assert.equal(r.url, "/sellback/new?id=*&tab=chi-tiet");
+});
+
+test("P0-4: stale params are still dropped from a dynamic URL", () => {
+  const r = scrubUrl("/sellback/new?id=deb5b23f-eb01-4b3d-bf69-dbaa59f7dbf6&keyword=DIZZO");
+  assert.equal(r.url, "/sellback/new?id=*");
 });
 
 test("P0-4: a UUID in the path becomes a wildcard segment", () => {
@@ -57,7 +67,7 @@ test("P0-4: a dynamic URL clears navigationUrl - there is no single page to open
     urlPattern: "/sellback/new?id=deb5b23f-eb01-4b3d-bf69-dbaa59f7dbf6",
     navigationUrl: "/sellback/new?id=deb5b23f-eb01-4b3d-bf69-dbaa59f7dbf6",
   });
-  assert.equal(r.urlPattern, "/sellback/new*");
+  assert.equal(r.urlPattern, "/sellback/new?id=*");
   assert.equal(r.navigationUrl, "");
   assert.equal(r.dynamic, true);
 });
@@ -114,12 +124,12 @@ test("step ids are deterministic across runs", () => {
 test("P0-4 end to end: the wait chain still points at the widened URL", () => {
   const { guides } = runPipeline();
   const g = guides[0];
-  assert.equal(g.steps[1].urlPattern, "/sellback/create*");
+  assert.equal(g.steps[1].urlPattern, "/sellback/create?id=*");
   assert.equal(g.steps[1].navigationUrl, "");
   // Step 0 waits for step 1's pattern; step 1 waits for step 2's. Both are the wildcard,
   // so validateDraftGuide's "previous step must navigate here" rule is satisfied.
-  assert.equal(g.steps[0].action.expectedUrl, "/sellback/create*");
-  assert.equal(g.steps[1].action.expectedUrl, "/sellback/create*");
+  assert.equal(g.steps[0].action.expectedUrl, "/sellback/create?id=*");
+  assert.equal(g.steps[1].action.expectedUrl, "/sellback/create?id=*");
   assert.deepEqual(g.validation.errors, []);
 });
 

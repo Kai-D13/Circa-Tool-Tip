@@ -1,3 +1,5 @@
+begin;
+
 -- =============================================================================
 -- Circa Tool-tip · 0004 · Release RPC (publish, rollback, read)
 --
@@ -16,6 +18,10 @@
 -- đang published. Vì snapshot và số revision sinh ra trong cùng một câu lệnh, không tồn
 -- tại khe hở nào để payload chứa nội dung mới mà lại mang số version cũ (audit P0-2).
 -- =============================================================================
+--
+-- Chạy trọn trong một transaction: dừng giữa chừng thì không để lại trạng thái
+-- nửa vời. (SQL Editor có thể cảnh báo "transaction already in progress" — vô hại.)
+
 
 -- =============================================================================
 -- admin_publish_site
@@ -49,6 +55,14 @@ begin
   -- Hai lần publish đồng thời cùng một site sẽ cùng đọc max(revision). Unique constraint
   -- đã đủ để chặn hỏng dữ liệu, nhưng khoá này biến nó thành xếp hàng thay vì báo lỗi.
   perform pg_advisory_xact_lock(hashtext('circa_tooltip_release:' || p_site));
+
+  -- Khoá luôn các dòng guide sắp đưa vào release. Advisory lock chỉ chặn publish khác;
+  -- nếu không có FOR UPDATE thì admin_save_guide_steps vẫn có thể sửa draft ở khoảng
+  -- giữa lúc validate và lúc đọc lại để build payload, làm release chứa dữ liệu chưa
+  -- được validate. Khoá giữ tới hết transaction, tức là vài mili-giây.
+  perform 1 from public.guides
+   where site_code = p_site and status = 'published'
+   for update;
 
   -- audit P0-3: không tạo ra release mà extension chắc chắn từ chối. Một guide hỏng làm
   -- cả site mất hướng dẫn, nên kiểm tra trước khi ghi bất cứ thứ gì.
@@ -333,3 +347,5 @@ $$;
 
 revoke all on function public.get_release(text) from public;
 grant execute on function public.get_release(text) to anon, authenticated;
+
+commit;

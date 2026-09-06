@@ -53,6 +53,31 @@ test("REGRESSION: wildcard is anchored at the start of the path", () => {
   assert.ok(!wildcardToRegExp("/ban-hang/*").test("/ban-hang-online/1"));
 });
 
+test("ACCEPTANCE: a wildcarded id matches only a page that carries that parameter", () => {
+  // `/sellback/create*` would also match the broken id-less page and `-copy` siblings.
+  // Keeping the parameter name is what makes the pattern mean "some record is open".
+  const s = step({ site: "pos", urlPattern: "/sellback/create?id=*" });
+  const m = (href) => stepMatchesLocation(s, at(href), { sites: SITES });
+
+  assert.ok(m("https://pos.v2.circa.vn/sellback/create?id=98f7f76b-53e0-450c-8843-d557e8145f5a"));
+  assert.ok(m("https://pos.v2.circa.vn/sellback/create?id=bat-ky-gia-tri-nao"));
+  assert.ok(!m("https://pos.v2.circa.vn/sellback/create"), "trang thiếu id là trang hỏng");
+  assert.ok(!m("https://pos.v2.circa.vn/sellback/create-copy"));
+  assert.ok(!m("https://pos.v2.circa.vn/sellback/create-copy?id=abc"));
+  assert.ok(!m("https://admin.v2.circa.vn/sellback/create?id=abc"), "sai site thì không khớp");
+});
+
+test("ACCEPTANCE: a wildcarded store id behaves the same", () => {
+  const s = step({ site: "admin", urlPattern: "/sellback/eligible?pos=*" });
+  const m = (href) => stepMatchesLocation(s, at(href), { sites: SITES });
+  assert.ok(m("https://admin.v2.circa.vn/sellback/eligible?pos=e71c515b-38a9-481c-a4f1-84eb640db60d"));
+  assert.ok(!m("https://admin.v2.circa.vn/sellback/eligible"));
+});
+
+test("patternBase of a query wildcard is still the path, so the wait chain lines up", () => {
+  assert.equal(patternBase("/sellback/create?id=*"), "/sellback/create");
+});
+
 test("origin gates the match, so an admin step never fires on POS", () => {
   const adminStep = step({ site: "admin", urlPattern: "/quan-ly-voucher" });
   assert.ok(stepMatchesLocation(adminStep, at("https://admin.v2.circa.vn/quan-ly-voucher"), { sites: SITES }));

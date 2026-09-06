@@ -1,3 +1,5 @@
+begin;
+
 -- =============================================================================
 -- Circa Tool-tip · 0002 · Schema v5
 --
@@ -20,8 +22,17 @@
 --     mang publishable key. Mọi thứ đã publish là đọc được với key đó, nên importer
 --     phải scrub PII trước khi có gì được import.
 -- =============================================================================
+--
+-- Chạy trọn trong một transaction: dừng giữa chừng thì không để lại trạng thái
+-- nửa vời. (SQL Editor có thể cảnh báo "transaction already in progress" — vô hại.)
 
-create type public.guide_status as enum ('unassigned', 'draft', 'published', 'archived');
+
+-- CREATE TYPE không idempotent, mà migration này có thể phải chạy lại sau một lần dừng
+-- giữa chừng. Bọc lại để chạy lần hai không chết.
+do $$ begin
+  create type public.guide_status as enum ('unassigned', 'draft', 'published', 'archived');
+exception when duplicate_object then null;
+end $$;
 
 -- -----------------------------------------------------------------------------
 -- sites: hai web app mà extension chèn UI vào.
@@ -265,3 +276,5 @@ begin
   return null;
 end;
 $$;
+
+commit;

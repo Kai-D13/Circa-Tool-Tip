@@ -333,7 +333,9 @@ revision, không tồn tại khe hở để payload mang nội dung mới nhưng
 2. **Tải payload** chỉ cho site có `revision` khác cache: `POST /rest/v1/rpc/get_release {"p_site":"pos"}`.
 3. **Validate trước khi swap**: `schemaVersion === 5`, `site` đúng, `revision` khớp bản vừa probe (chống republish giữa chừng), `checksum` trong payload khớp `release_heads.checksum`, mọi guide/step hợp lệ, mọi step có `site` hợp lệ.
 
-   **Chính sách checksum (đã chốt lúc implement 0004).** Checksum tính trong SQL bằng `sha256(jsonb::text)`. Postgres serialize jsonb ổn định nên giá trị này nhất quán ở phía server, **nhưng không tái tạo được từ JavaScript** vì canonical JSON của JS sắp xếp key theo cách khác. Do đó extension **không tính lại** checksum; nó đối chiếu `release_heads.checksum` với `checksum` nhúng trong payload tải về, cộng với so khớp revision. Đó đúng là lỗi cần bắt: head bị đổi trong lúc payload đang truyền. Body bị cắt cụt thì `JSON.parse` chết, body sai cấu trúc thì `validateReleasePayload()` chặn. Hàm `releaseChecksum()` trong `packages/guide-schema` vẫn dùng cho portal để phát hiện draft trôi so với version đã snapshot, không dùng cho đường sync.
+   **Chính sách checksum (đã chốt lúc implement 0004).** Checksum tính trong SQL bằng `sha256(jsonb::text)`. Postgres serialize jsonb ổn định nên giá trị này nhất quán ở phía server, **nhưng không tái tạo được từ JavaScript** vì canonical JSON của JS sắp xếp key theo cách khác. Do đó extension **không tính lại** checksum; nó đối chiếu `release_heads.checksum` với `checksum` nhúng trong payload tải về, cộng với so khớp revision. Đó đúng là lỗi cần bắt: head bị đổi trong lúc payload đang truyền. Body bị cắt cụt thì `JSON.parse` chết, body sai cấu trúc thì `validateReleasePayload()` chặn.
+
+`packages/guide-schema` **không có** hàm `releaseChecksum()` — một bản thứ hai phía JS chỉ có thể bất đồng với database. Ở đó chỉ còn `canonicalJson()` + `sha256Tagged()`, dùng cho nội dung mà client tự sở hữu (hiện là artifact import legacy).
 4. **Monotonic**: chỉ nhận `incoming.revision > current.revision`.
 5. **Thất bại ở bất kỳ bước nào** → giữ nguyên `release:<site>`, chỉ ghi `releaseStatus:<site> = {ok:false, syncedAt, error}`.
 6. **Hai pipeline độc lập** — POS lỗi không được làm Admin bị đánh dấu lỗi.
@@ -467,7 +469,20 @@ Replay draft 48 guide (pha 1 dry-run) · repair step lỗi · stakeholder duyệ
 | P0-1 | Optimistic concurrency chưa atomic: SELECT → so sánh → UPDATE theo id | Điều kiện `updated_at` đưa vào chính `WHERE` của `UPDATE`, xác nhận bằng `ROW_COUNT`. Test: stale bị chặn (40001), lưu đúng timestamp thành công, timestamp đã dùng rồi vẫn bị chặn, guide không tồn tại báo P0002 |
 | P0-2 | Release có thể mang content mới nhưng `guideRevision` cũ | **Bỏ hẳn bảng `guide_versions`.** Release build thẳng từ `draft_steps` trong cùng câu lệnh sinh revision → không còn khe hở. Test: sửa draft rồi publish lại phải thấy nội dung mới ở revision mới |
 | P0-3 | Publish cho phép tạo release mà extension chắc chắn từ chối | `guide_publish_error()` kiểm: có bước, hình dạng step hợp lệ, `siteOverride` tồn tại và đang bật, không còn `validation.errors`. Gọi ở cả `admin_set_guide_status('published')` lẫn `admin_publish_site`. Test 3 trường hợp hỏng |
-| P0-4 | Scrub UUID làm mất navigation context | Query có record id → URL nới thành `/duong-dan*` thay vì xoá param; `navigationUrl` để trống vì các trang đó chỉ tới được bằng click qua bước trước; `expectedUrl` tự thành wildcard theo bước kế tiếp. 8 test, gồm cả 6 step thật |
+| P0-4 | Scrub UUID làm mất navigation context | Query có record id → **giữ tên tham số, chỉ thay giá trị**: `/sellback/create?id=*`. `navigationUrl` để trống vì các trang đó chỉ tới được bằng click qua bước trước; `expectedUrl` tự thành wildcard theo bước kế tiếp |
+
+### Vòng audit thứ hai (Batch 1A.2)
+
+| # | Audit nói | Đã làm |
+|---|---|---|
+| P0 | `/sellback/create*` vẫn khớp `/sellback/create` (trang hỏng) và `/sellback/create-copy` | Giữ tên tham số: `/sellback/create?id=*`, `/sellback/eligible?pos=*`, `/sellback/new?id=*`. Tham số khác vẫn được giữ nguyên bên cạnh; tham số môi trường cũ vẫn bị gỡ. `patternBase` vẫn ra `/sellback/create` nên chuỗi chờ khớp như cũ |
+| P1 | Publish validate rồi mới đọc lại draft — có khe hở cho edit xen vào | Sau advisory lock thêm `SELECT ... FOR UPDATE` trên đúng các guide sắp release. Khoá giữ vài mili-giây tới hết transaction |
+| P1 | `p_checksum` truyền null là bypass được | Bắt buộc khác rỗng, đúng định dạng `sha256:<64 hex>`, và phải bằng `payload.contentChecksum` |
+| P1 | Migration lần đầu có thể dừng giữa file | Cả 4 file bọc `begin; ... commit;`; `CREATE TYPE` bọc `do $$ ... exception when duplicate_object then null; end $$` để chạy lại được |
+| P2 | `now()` cố định trong một transaction làm test concurrency vô nghĩa | `guides.updated_at` ghi bằng `clock_timestamp()`; test giữ lại timestamp thật đã đọc rồi chứng minh lần lưu thứ hai bị `40001` và dữ liệu không bị ghi đè |
+| P2 | Tài liệu còn nhắc `releaseChecksum()` đã xoá | Đã dọn ở plan §5 và ở đầu `checksum.ts` |
+| P2 | Artifact còn `groupId: null` | Đổi thành `groupName: ""` cho khớp cột `guides.group_name` |
+| P2 | Mô tả test P0-4 chưa chính xác | Nói rõ: test chạy trên **fixture tổng hợp** (bản production chứa dữ liệu khách hàng nên không nằm trong repo). Sáu step thật được đối soát bằng cách chạy importer và in ra bảng trong `IMPORT_REPORT.md` §9 |
 | P1 | Checksum lẫn lộn | Ba tên riêng: `sourceFileSha256`, `contentChecksum`, `artifactFileSha256`. Bỏ `releaseChecksum()` phía JS — checksum release chỉ tính ở SQL |
 | P1 | `expect_reject` bắt mọi exception | Nhận thêm SQLSTATE mong đợi và so khớp |
 | P1 | Validate group theo effective site | Không còn vấn đề: nhóm là cột text, không phải bảng có FK |

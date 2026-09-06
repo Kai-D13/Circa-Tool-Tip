@@ -133,13 +133,31 @@ export function scrubUrl(url) {
 
   if (!query) return { url: original, flags: [], dynamic: false };
 
-  // A record id anywhere in the query makes the whole URL specific to one record.
-  // Widen the path rather than dropping the param and leaving a dead link.
-  for (const [, rawValue] of new URLSearchParams(query)) {
-    if (UUID_ANYWHERE_RE.test(String(rawValue ?? ""))) {
-      flags.add(SCRUB_FLAGS.UUID);
-      return { url: path + "*" + hash, flags: [...flags], dynamic: true };
+  // A record id anywhere in the query makes the URL specific to one record. Replace the
+  // VALUE with a wildcard and keep the parameter NAME: `/sellback/create*` would also
+  // match `/sellback/create` (the broken id-less page) and `/sellback/create-copy`,
+  // whereas `/sellback/create?id=*` matches only a page that actually carries an id.
+  if ([...new URLSearchParams(query)].some(([, v]) => UUID_ANYWHERE_RE.test(String(v ?? "")))) {
+    flags.add(SCRUB_FLAGS.UUID);
+    const parts = [];
+    for (const [key, rawValue] of new URLSearchParams(query)) {
+      const value = String(rawValue ?? "");
+      if (value === "") continue;
+      if (STALE_KEY_RE.test(key)) {
+        flags.add(SCRUB_FLAGS.STALE);
+        continue;
+      }
+      if (UUID_ANYWHERE_RE.test(value)) {
+        parts.push(encodeURIComponent(key) + "=*");
+        continue;
+      }
+      if (PHONE_KEY_RE.test(key) || containsPhone(value)) {
+        flags.add(SCRUB_FLAGS.PII);
+        continue;
+      }
+      parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
     }
+    return { url: path + "?" + parts.join("&") + hash, flags: [...flags], dynamic: true };
   }
 
   const kept = [];

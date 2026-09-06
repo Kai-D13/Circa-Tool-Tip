@@ -68,7 +68,7 @@ export function transformGuide(legacyGuide, opts = {}) {
     legacyId: legacyGuide.id,
     name: String(legacyGuide.name || "").trim(),
     siteCode: null,
-    groupId: null,
+    groupName: "",
     status: "unassigned",
     startUrl: scrubbedStartUrl,
     sortOrder: opts.sortOrder ?? 0,

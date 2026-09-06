@@ -1,3 +1,5 @@
+begin;
+
 -- =============================================================================
 -- Circa Tool-tip · 0001 · Auth spine
 --
@@ -11,6 +13,10 @@
 --   * SELECT policies only. There is NO insert/update/delete policy on any table.
 --   * Every mutation goes through a security-definer RPC guarded by is_admin().
 -- =============================================================================
+--
+-- Chạy trọn trong một transaction: dừng giữa chừng thì không để lại trạng thái
+-- nửa vời. (SQL Editor có thể cảnh báo "transaction already in progress" — vô hại.)
+
 
 create extension if not exists pgcrypto;
 
@@ -131,3 +137,5 @@ create policy admin_allowlist_admin_read
 
 revoke all on function public.is_admin() from public;
 grant execute on function public.is_admin() to authenticated;
+
+commit;
