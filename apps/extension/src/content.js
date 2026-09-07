@@ -86,9 +86,29 @@
 
   setTimeout(() => void handshake(0), HANDSHAKE_RETRIES_MS[0]);
 
-  /** The worker tells us when the recording ends; otherwise this tab would keep eating clicks. */
+  /**
+   * Commands pushed down by the worker.
+   *
+   * `tg:disarm` ends the picker — without it this tab would keep eating clicks after the
+   * recording stopped. `tg:session` carries a session that changed without this tab
+   * doing anything, which is exactly what Undo is: it happens between the Portal and the
+   * worker, so the counter on this page would otherwise keep showing the step that was
+   * just removed until the next click or a reload.
+   */
   chrome.runtime.onMessage.addListener((raw) => {
-    if (raw?.type === "tg:disarm") disarm();
+    if (raw?.type === "tg:disarm") {
+      disarm();
+      return false;
+    }
+    if (raw?.type === "tg:session") {
+      // Only ever adopt the session this tab is already recording. A message about some
+      // other recording must not repaint this one.
+      const incoming = raw.session;
+      if (session && incoming && incoming.id === session.id) {
+        session = incoming;
+        render();
+      }
+    }
     return false;
   });
 

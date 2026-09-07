@@ -27,6 +27,21 @@ node apps/extension/build.mjs
 > Nếu Portal đang chạy sẵn từ trước 2B.2A thì phải khởi động lại: `NEXT_PUBLIC_*` được
 > nhúng lúc build client.
 
+## 0.5 Ba regression chạy trước (2B.2B.1)
+
+Ba lỗi audit tìm ra ở `a9bad3b`. Chạy ba mục này trước, nếu một mục fail thì dừng luôn,
+không cần chạy tiếp 11 mục dưới.
+
+| # | Thao tác | Kỳ vọng | Kết quả |
+|---|---|---|---|
+| R1 | Ghi một bước bằng cách bấm vào phần tử **nằm sâu** (vd chữ trong một ô của bảng, cách phần tử có id ổn định 2–3 tầng). Xem selector chính trong editor | Selector chính khớp **đúng 1** element. Dán nó vào Console tab POS: `document.querySelectorAll("<selector>").length` phải ra `1`, và `document.querySelector("<selector>")` phải là đúng phần tử đã bấm | |
+| R2 | Đang ghi 3 bước, bấm **Hoàn tác bước cuối** ở Portal | Portal xuống 2 bước **và** thanh đen trên POS cũng xuống `2 bước` **ngay**, không cần bấm thêm hay F5 | |
+| R3 | Ghi một bước trên POS `/dashboard`, rồi điều hướng sang Admin `/dashboard` trong cùng phiên và bấm một phần tử | Bước POS có `click_wait_url`, `expectedUrl = /dashboard`, `expectedSiteOverride = admin`. **Không** được là `click_next` | |
+
+R3 cần một route trùng tên trên cả hai site. Nếu POS/Admin hiện không có route nào trùng
+pathname thì bỏ qua R3 — logic đã có regression test tự động
+(`apps/admin/tests/recorder.test.mjs`).
+
 ## 1. Nút "Bắt đầu ghi" xuất hiện đúng chỗ, và khoá đúng lúc
 
 Mở một bộ hướng dẫn bất kỳ: `/guides` → bấm vào một bộ.
@@ -98,7 +113,7 @@ thật, nên điều hướng không thể cắt mất nó.
 
 | # | Thao tác | Kỳ vọng | Kết quả |
 |---|---|---|---|
-| 7.1 | Bấm **Hoàn tác bước cuối** | Số bước giảm 1 ở cả Portal lẫn thanh đen | |
+| 7.1 | Bấm **Hoàn tác bước cuối** | Số bước giảm 1 ở cả Portal lẫn thanh đen, **ngay lập tức** (xem R2) | |
 | 7.2 | Bấm **Dừng ghi** | Portal hiện "Đã dừng · N bước ghi được" kèm danh sách text/selector. Thanh đen trên tab POS **biến mất**, click trên POS trở lại bình thường | |
 | 7.3 | Kiểm tra Supabase (`/guides` ở tab khác, hoặc reload editor) | Bộ **chưa** có bước mới nào — chưa lưu gì cả | |
 | 7.4 | Bấm **Chèn N bước vào cuối bộ** | Các bước cũ **còn nguyên, đúng thứ tự**; N bước mới nằm sau cùng; xuất hiện chip "Có thay đổi chưa lưu" | |
@@ -112,6 +127,7 @@ Mở vài bước vừa ghi trên POS và đọc ô **Selector**.
 
 | # | Kiểm tra | Kỳ vọng | Kết quả |
 |---|---|---|---|
+| 8.0 | Dán từng selector của vài bước vào Console: `document.querySelectorAll("<sel>").length` | Mọi selector đều ra **>= 1**. Không candidate nào được ra `0` | |
 | 8.1 | Có selector nào là `#basic-button` đứng **đầu** danh sách không? | **Không.** POS có 9 element trùng ID này; nó chỉ được phép nằm ở vị trí dự phòng | |
 | 8.2 | Có class dạng `css-jj9uz9` trong selector không? | **Không** — class MUI sinh động bị loại trước khi ghi | |
 | 8.3 | `matchText` của bước bấm "Cài Đặt" | Đúng chuỗi `Cài Đặt` | |
@@ -166,3 +182,6 @@ Không phải bug, ghi ra để khỏi mất công truy:
 | Append giữ nguyên bước cũ (mục 7.4) | | |
 | Chất lượng selector (mục 8) | | |
 | Ranh giới BAD_URL (mục 10) | | |
+| R1 selector nhiều tầng khớp đúng 1 element | | |
+| R2 Undo cập nhật cả Portal lẫn thanh đen | | |
+| R3 POS→Admin trùng pathname ra `click_wait_url` | | |

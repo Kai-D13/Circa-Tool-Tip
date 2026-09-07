@@ -49,7 +49,7 @@ export const ERROR_CODES = {
 export const CONTENT_TYPES = ["tg:hello", "tg:step", "tg:navigated"];
 
 /** Messages the service worker pushes down to a content script. */
-export const CONTENT_COMMANDS = ["tg:disarm"];
+export const CONTENT_COMMANDS = ["tg:disarm", "tg:session"];
 
 export function ok(type, data = {}) {
   return { v: PROTOCOL_VERSION, ok: true, type, data };
@@ -146,4 +146,16 @@ export function isAllowedTargetUrl(url, allowedOrigins) {
   }
   if (parsed.protocol !== "https:") return false;
   return (allowedOrigins || []).includes(parsed.origin);
+}
+
+/**
+ * Map a thrown error onto a wire code.
+ *
+ * A SessionError already carries a code the protocol knows. Anything else is a genuine
+ * crash and reports as INTERNAL — the Portal must be able to tell "you asked for
+ * something impossible" apart from "the extension broke".
+ */
+export function errorCodeOf(err) {
+  const code = err?.code;
+  return code && Object.values(ERROR_CODES).includes(code) ? code : ERROR_CODES.INTERNAL;
 }

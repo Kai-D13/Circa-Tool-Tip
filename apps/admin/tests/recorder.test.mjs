@@ -175,3 +175,46 @@ test("recording nothing changes nothing", () => {
   const existing = [{ id: "st_old1", selectors: [], matchText: "", tag: "", title: "", content: "", urlPattern: "", navigationUrl: "", action: { type: "highlight", expectedUrl: "", timeoutMs: 0 } }];
   assert.deepEqual(appendRecorded(existing, [], { guideSite: "pos", originSite: ORIGIN_SITE }), existing);
 });
+
+/* ------------------------------- P0: POS -> Admin trùng pathname vẫn là điều hướng */
+
+test("P0 REGRESSION: POS -> Admin on the same pathname is still a navigation", () => {
+  // /dashboard tồn tại trên CẢ hai site. So sánh mỗi pathname thì cú nhảy này bị xếp là
+  // "đứng yên", tour không chờ, và bước Admin chạy khi trình duyệt còn ở POS.
+  const steps = map([
+    click({ urlPattern: "/dashboard", origin: "https://pos.v2.circa.vn" }),
+    click({ urlPattern: "/dashboard", origin: "https://admin.v2.circa.vn" }),
+  ]);
+
+  assert.equal(steps[0].action.type, "click_wait_url");
+  assert.equal(steps[0].action.expectedUrl, "/dashboard");
+  assert.equal(steps[0].action.expectedSiteOverride, "admin");
+  assert.equal(steps[1].siteOverride, "admin");
+});
+
+test("Admin -> POS on the same pathname is a navigation too", () => {
+  const steps = recordedToDraftSteps(
+    [
+      click({ urlPattern: "/dashboard", origin: "https://admin.v2.circa.vn" }),
+      click({ urlPattern: "/dashboard", origin: "https://pos.v2.circa.vn" }),
+    ],
+    { guideSite: "admin", originSite: ORIGIN_SITE, newId: ids() },
+  );
+  assert.equal(steps[0].action.type, "click_wait_url");
+  assert.equal(steps[0].action.expectedSiteOverride, "pos");
+});
+
+test("the same path on the same site is still not a navigation", () => {
+  const steps = map([click({ urlPattern: "/dashboard" }), click({ urlPattern: "/dashboard" })]);
+  assert.equal(steps[0].action.type, "click_next");
+  assert.equal(steps[0].action.expectedUrl, "");
+});
+
+test("two unknown origins that differ still count as a navigation", () => {
+  const steps = map([
+    click({ urlPattern: "/x", origin: "https://a.example" }),
+    click({ urlPattern: "/x", origin: "https://b.example" }),
+  ]);
+  assert.equal(steps[0].action.type, "click_wait_url");
+  assert.equal(steps[0].action.expectedSiteOverride, undefined, "không bịa site cho origin lạ");
+});

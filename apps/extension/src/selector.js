@@ -186,7 +186,10 @@
    * the last couple of hops are structural.
    */
   function anchoredPath(el, count, maxUp) {
-    var trail = [];
+    // Nodes BELOW `cur`, nearest-to-root first — `cur` itself is never in here, which is
+    // why it has to be prepended and not appended when the anchor is found. Getting that
+    // backwards produces a selector that reads plausibly and matches nothing.
+    var below = [];
     var cur = el;
     var up = 0;
     while (cur && up <= maxUp) {
@@ -195,10 +198,10 @@
       var own = ownSelectors(parent);
       for (var i = 0; i < own.length; i++) {
         if (count(own[i]) === 1) {
-          return own[i] + " > " + trail.concat([segment(cur)]).join(" > ");
+          return own[i] + " > " + [segment(cur)].concat(below).join(" > ");
         }
       }
-      trail.unshift(segment(cur));
+      below.unshift(segment(cur));
       cur = parent;
       up++;
     }
@@ -247,8 +250,13 @@
       else if (n > 1) ambiguous.push(own[i]);
     }
 
+    // Count it like any other candidate. A path that resolves to NOTHING must never be
+    // emitted: the runtime would walk to it, find nothing, and fall through — and the
+    // structural fallback behind it would hide the fact that the anchor was wrong.
     var anchored = anchoredPath(el, safeCount, 5);
-    if (anchored && safeCount(anchored) === 1) unique.push(anchored);
+    var anchoredCount = anchored ? safeCount(anchored) : 0;
+    if (anchoredCount === 1) unique.push(anchored);
+    else if (anchoredCount > 1) ambiguous.push(anchored);
 
     var out = [];
     var push = function (sel) {
@@ -259,7 +267,6 @@
     // multi-match by matchText, and that is how "Cài Đặt" resolves on POS. It just must
     // never be the PRIMARY candidate when something unique exists.
     unique.forEach(push);
-    if (anchored) push(anchored);
     ambiguous.forEach(push);
 
     // Only when nothing addressable was found. A structural path that sits BEHIND a

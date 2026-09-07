@@ -118,10 +118,11 @@ export function recordReadiness(opts: {
  *
  * Two things are decided here that the extension cannot know:
  *
- *  - **Does this click navigate?** If the next step was captured on a different path,
- *    then it did, and the step becomes `click_wait_url` aimed at that path. This is the
- *    same rule the importer used (`resolveExpectedUrl`), so recorded and imported
- *    guides behave identically at runtime.
+ *  - **Does this click navigate?** If the next step was captured somewhere else — a
+ *    different path, OR the same path on the other site — then it did, and the step
+ *    becomes `click_wait_url` aimed at that page. Comparing paths alone is not enough:
+ *    `/dashboard` exists on both POS and Admin, so a POS -> Admin hop that keeps the
+ *    path would be filed as "stayed put" and the tour would never wait for the jump.
  *  - **Which site is this step on?** Only steps that left the guide's own site get a
  *    `siteOverride`; a step on the guide's site inherits it, per schema v5.
  *
@@ -136,11 +137,15 @@ export function recordedToDraftSteps(
   const newId = opts.newId ?? newStepId;
   const siteOf = (step: RecordedStep) => opts.originSite[String(step.origin || "").replace(/\/+$/, "")] ?? null;
 
+  const originOf = (step: RecordedStep) => String(step.origin || "").replace(/\/+$/, "");
+
   return recorded.map((step, i) => {
     const next = recorded[i + 1];
-    const navigates = !!next && next.urlPattern !== step.urlPattern;
     const site = siteOf(step);
     const nextSite = next ? siteOf(next) : null;
+    // Origin, not site: two steps on origins that map to no known site are still two
+    // different places, and comparing raw origins can never be wrong where sites differ.
+    const navigates = !!next && (next.urlPattern !== step.urlPattern || originOf(next) !== originOf(step));
 
     const action: Record<string, unknown> = {
       type: navigates ? "click_wait_url" : "click_next",

@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
@@ -10,7 +11,6 @@ import * as SRC from "../../../packages/guide-schema/src/index.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXT = resolve(HERE, "..");
-const BUNDLE = resolve(EXT, "dist/unpacked/vendor/guide-schema.global.js");
 
 /**
  * The extension gets guide-schema through a generated single-file bundle. That bundle is
@@ -19,13 +19,21 @@ const BUNDLE = resolve(EXT, "dist/unpacked/vendor/guide-schema.global.js");
  * actually depends on.
  */
 function loadBundle() {
-  if (!existsSync(BUNDLE)) execFileSync(process.execPath, [resolve(EXT, "build.mjs")], { stdio: "pipe" });
-  const ctx = vm.createContext({ crypto: globalThis.crypto, TextEncoder, URL, console });
-  vm.runInContext(readFileSync(BUNDLE, "utf8"), ctx);
-  return ctx.GUIDE_SCHEMA;
+  // Built fresh, never reused from dist/unpacked: a bundle left over from an earlier
+  // build would let this suite certify code that is no longer what the build produces.
+  const out = mkdtempSync(join(tmpdir(), "tg-ext-"));
+  try {
+    execFileSync(process.execPath, [resolve(EXT, "build.mjs"), "--out", out], { stdio: "pipe" });
+    const ctx = vm.createContext({ crypto: globalThis.crypto, TextEncoder, URL, console });
+    const source = readFileSync(resolve(out, "vendor/guide-schema.global.js"), "utf8");
+    vm.runInContext(source, ctx);
+    return { api: ctx.GUIDE_SCHEMA, source };
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
 }
 
-const G = loadBundle();
+const { api: G, source: BUNDLE_SOURCE } = loadBundle();
 
 /**
  * Values built inside the vm realm have different prototypes, and deepStrictEqual
@@ -130,7 +138,7 @@ test("constants match, so the extension cannot disagree about schema version", (
 });
 
 test("the bundle carries no import/export statements left over from the modules", () => {
-  const src = readFileSync(BUNDLE, "utf8");
+  const src = BUNDLE_SOURCE;
   assert.ok(!/^\s*import\s/m.test(src), "còn sót import");
   assert.ok(!/^\s*export\s/m.test(src), "còn sót export");
 });
