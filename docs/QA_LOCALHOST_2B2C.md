@@ -23,6 +23,7 @@ pnpm --filter admin dev
 | 0.1 | `chrome://extensions` → **Reload** extension | Không lỗi đỏ. ID không đổi: `hgkjieodgaieajjijlbdecfkejaclndf` | |
 | 0.2 | Xem **Permissions** | Vẫn chỉ `storage` + hai host POS/Admin. Batch này thêm `chrome.tabs.remove` (đóng tab probe cũ) — vẫn **không** cần quyền `tabs` | |
 | 0.3 | Mở service worker → Console | Không lỗi đỏ | |
+| 0.4 | Console tab Portal: `chrome.runtime.sendMessage("hgkjieodgaieajjijlbdecfkejaclndf",{v:1,type:"HELLO"},console.log)` | `capabilities` có đủ ba: `["record","probe","preview"]` | |
 
 ## 1. Ghi hướng dẫn vẫn nguyên vẹn (regression 2B.2B)
 
@@ -60,6 +61,9 @@ Mở một bộ POS đã gán site, mở rộng một bước có selector thậ
 | 3.2 | Sửa selector thành `button:has(` (sai cú pháp) | Báo **sai cú pháp**, không phải "0 element" | |
 | 3.3 | Xoá hết `matchText` của một bước có selector khớp nhiều element | Chip đỏ, lý do nói selector khớp nhiều element và không có text để lọc | |
 | 3.4 | Đổi `matchText` thành chữ không có trên trang, giữ selector khớp đúng 1 | Chip đỏ, lý do nói **text trên trang đã khác** — không được báo đạt | |
+| 3.4b | **Vẫn ở bước đó**, bấm **Chạy thử** | Element được tô **viền đỏ** (để chẩn đoán), thẻ ghi "TEXT trên trang đã khác". **Tuyệt đối không** tô xanh | |
+| 3.4c | Bấm **Tiếp** ở bước hỏng đó | Vẫn đi tiếp được — một bước hỏng không làm kẹt cả bộ | |
+| 3.7 | Bấm kiểm tra selector rồi **đóng tab kiểm tra** trước khi nó kịp hiện kết quả | Nút thoát khỏi "Đang kiểm tra…", Portal báo tab bị đóng | |
 | 3.5 | Xoá hết selector của một bước | Nút bị khoá, lý do "Bước này chưa có selector nào để kiểm tra." | |
 | 3.6 | Kiểm tra bước thứ hai ngay sau bước thứ nhất | Tab cũ **đóng lại**, chỉ còn một tab kiểm tra | |
 
@@ -84,7 +88,7 @@ Mở một bộ POS đã gán site, mở rộng một bước có selector thậ
 | 5.7 | Ở bước cuối, nút chính ghi **Kết thúc** | Bấm vào thì thẻ biến mất, Portal quay về trạng thái chưa chạy | |
 | 5.8 | Chạy lại rồi bấm **Thoát** giữa chừng | Thẻ biến mất ngay, trang trở lại bình thường | |
 | 5.9 | Chạy lại rồi bấm **Dừng chạy thử** ở Portal | Thẻ trên trang biến mất | |
-| 5.10 | Chạy lại rồi **đóng tab** đang chạy thử | Portal quay về trạng thái chưa chạy | |
+| 5.10 | Chạy lại rồi **đóng tab** đang chạy thử | Portal quay về trạng thái chưa chạy **ngay**, nút **Chạy thử** dùng lại được. Không được kẹt ở "Đang chạy thử" | |
 
 ## 6. Chạy thử dùng đúng bản đang sửa, và không lưu gì
 
@@ -148,4 +152,7 @@ hàng thật được tạo ra.
 | Chạy thử đi hết bộ, qua được điều hướng (mục 5) | | |
 | Chạy thử dùng bản chưa lưu và không ghi database (mục 6) | | |
 | Không auto-click khi chạy thử (mục 7) | | |
+| Text lệch: probe đỏ VÀ chạy thử không tô xanh (mục 3.4–3.4b) | | |
+| Đóng tab chạy thử / tab probe không kẹt trạng thái (5.10, 3.7) | | |
+| HELLO khai đủ ba capability (mục 0.4) | | |
 | BAD_URL / BAD_STEP (mục 9) | | |

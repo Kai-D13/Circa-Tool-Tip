@@ -57,7 +57,9 @@ export function createHub({ store, tabs, targetOrigins, info }) {
           extVersion: info.extVersion,
           protocolVersion: 1,
           schemaVersion: info.schemaVersion,
-          capabilities: ["record"],
+          // Everything this build can actually do. The Portal will gate features on
+          // this list, so a capability missing here is a feature it will refuse to use.
+          capabilities: ["record", "probe", "preview"],
         });
 
       case "GET_RECORDING": {
@@ -314,16 +316,38 @@ export function createHub({ store, tabs, targetOrigins, info }) {
   }
 
   /**
-   * Closing the recorded tab ends the recording.
+   * Closing the tab ends whatever was running in it.
    *
-   * Without this the session stays `recording` forever: it keeps holding a tab id that no
-   * longer exists, the Portal waits for steps that can never arrive, and the operator has
-   * no way to tell what happened. The captured steps are kept — only the status changes.
+   * Without this the session stays active forever: it keeps holding a tab id that no
+   * longer exists, the Portal waits for something that can never arrive, and the operator
+   * has no way to tell what happened. Captured steps are kept — only the status changes.
+   *
+   * The event has to be reported in the vocabulary of the JOB, not of the recorder. A
+   * preview that ends with `DONE` is a message the Portal's preview state never listens
+   * for, so the panel sits on "Đang chạy thử" forever; a probe that ends with silence
+   * leaves its button on "Đang kiểm tra…".
    */
   async function onTabRemoved(tabId) {
     const session = await store.findByTab(tabId).catch(() => null);
     if (!session) return;
     const done = await store.stop(session.id);
+
+    if (session.kind === "preview") {
+      pushToPortal(session.id, ok("PREVIEW_DONE", { session: done, reason: "tab-closed" }));
+      return;
+    }
+    if (session.kind === "probe") {
+      // The page never got to answer, and never will.
+      pushToPortal(
+        session.id,
+        fail(
+          "PROBE_RESULT",
+          ERROR_CODES.TAB_CLOSED,
+          "Tab kiểm tra bị đóng trước khi trang kịp trả lời.",
+        ),
+      );
+      return;
+    }
     pushToPortal(session.id, ok("DONE", { session: done, reason: "tab-closed" }));
   }
 

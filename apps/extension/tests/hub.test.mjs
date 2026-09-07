@@ -112,6 +112,9 @@ test("HELLO reports the versions the Portal checks compatibility against", async
   assert.equal(reply.ok, true);
   assert.equal(reply.data.extVersion, "0.1.0");
   assert.equal(reply.data.schemaVersion, 5);
+  // The Portal gates features on this list; a capability missing here is a feature it
+  // will refuse to use even though the build supports it.
+  assert.deepEqual([...reply.data.capabilities].sort(), ["preview", "probe", "record"]);
 });
 
 test("GET_RECORDING is how the Portal survives a dead port", async () => {
@@ -522,15 +525,55 @@ test("stopping from the Portal disarms the page", async () => {
   assert.equal(port.last().type, "PREVIEW_DONE");
 });
 
-test("closing the preview tab ends the preview", async () => {
+test("P0 REGRESSION: closing the preview tab reports PREVIEW_DONE, not DONE", async () => {
+  // The Portal's preview state only listens for PREVIEW_DONE. Reporting a closed preview
+  // tab as DONE leaves the panel stuck on "Đang chạy thử" with no way back.
   const { hub, tabs, store } = makeHub();
   const port = fakePort();
   await hub.handlePort(PREVIEW(), port);
   const tabId = tabs.created.at(-1).id;
 
   await hub.onTabRemoved(tabId);
+
   assert.equal((await store.get("pvw_1")).status, "done");
+  assert.equal(port.last().type, "PREVIEW_DONE");
+  assert.equal(port.last().data.reason, "tab-closed");
+});
+
+test("P0 REGRESSION: closing the probe tab releases the Portal's busy state", async () => {
+  // The page never answered and never will; silence leaves the button on
+  // "Đang kiểm tra…" forever.
+  const { hub, tabs, store } = makeHub();
+  const port = fakePort();
+  await hub.handlePort(PROBE(), port);
+  const tabId = tabs.created.at(-1).id;
+
+  await hub.onTabRemoved(tabId);
+
+  assert.equal(port.last().ok, false);
+  assert.equal(port.last().type, "PROBE_RESULT");
+  assert.equal(port.last().error.code, "TAB_CLOSED");
+  assert.equal((await store.get("prb_1")).status, "done");
+});
+
+test("closing a recording tab still reports DONE", async () => {
+  const { hub, tabs } = makeHub();
+  const { port, tabId } = await recording(hub, tabs, 2);
+  await hub.onTabRemoved(tabId);
   assert.equal(port.last().type, "DONE");
+  assert.equal(port.last().data.reason, "tab-closed");
+});
+
+test("a closed probe tab does not block the next probe", async () => {
+  const { hub, tabs, store } = makeHub();
+  const port = fakePort();
+  await hub.handlePort(PROBE(), port);
+  await hub.onTabRemoved(tabs.created.at(-1).id);
+
+  await hub.handlePort(PROBE({ probeId: "st_2" }), port);
+  const session = await store.get("prb_1");
+  assert.equal(session.status, "recording");
+  assert.equal(session.job.probeId, "st_2");
 });
 
 test("a recording, a probe and a preview can coexist on different tabs", async () => {

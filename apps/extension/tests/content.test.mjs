@@ -205,11 +205,14 @@ function pressCard(document, label) {
   button.click();
 }
 
-const boxVisible = (document) => {
+const boxEl = (document) => {
   const host = overlay(document);
-  const box = host.shadow.children.find((c) => String(c.className).startsWith("box"));
-  return box.style.display === "block";
+  return host.shadow.children.find((c) => String(c.className).startsWith("box"));
 };
+
+const boxVisible = (document) => boxEl(document).style.display === "block";
+/** "box ok" is the green, this-step-works highlight; plain "box" is the red one. */
+const boxIsGreen = (document) => String(boxEl(document).className).split(" ").includes("ok");
 
 /* ------------------------------------------------------------------- fixtures */
 
@@ -522,4 +525,46 @@ test("preview resumes at the stored step after a navigation", async () => {
   await tick();
   assert.equal(cardText(document, ".title"), "Bước hai");
   assert.match(cardText(document, ".meta"), /^Bước 2\/2/);
+});
+
+/* ------------------------------- P0: text lệch thì probe và chạy thử phải cùng trượt */
+
+test("P0 REGRESSION: probe and preview agree that a text-mismatched step fails", async () => {
+  // Selector khớp đúng 1 element, nhưng chữ trên trang đã khác. Trước đây probe báo đỏ
+  // còn chạy thử tô xanh chính element đó — hai công cụ nói ngược nhau về cùng một bước.
+  const moved = pageEl("Thiết Lập");
+  const matches = { "#basic-button": [moved] };
+
+  const probe = loadContent({ job: probeJob(guideStep()), matches });
+  await tick();
+  const answer = probe.sent.find((m) => m.type === "tg:probe-result");
+  assert.equal(answer.result.ok, false, "probe phải trượt");
+  assert.equal(boxIsGreen(probe.document), false);
+
+  const preview = loadContent({ job: previewJob([guideStep()]), matches });
+  await tick();
+  assert.ok(boxVisible(preview.document), "vẫn tô sáng để chẩn đoán");
+  assert.equal(boxIsGreen(preview.document), false, "nhưng KHÔNG được tô xanh");
+  assert.match(cardText(preview.document, ".note"), /TEXT trên trang đã khác/);
+});
+
+test("a step that really does resolve is still shown as green", async () => {
+  const { document } = loadContent({
+    job: previewJob([guideStep()]),
+    matches: { "#basic-button": [pageEl("Cài Đặt")] },
+  });
+  await tick();
+  assert.equal(boxIsGreen(document), true);
+});
+
+test("a text-mismatched step does not jam the preview", async () => {
+  const { document, sent } = loadContent({
+    job: previewJob([guideStep(), guideStep({ id: "st_2" })]),
+    matches: { "#basic-button": [pageEl("Thiết Lập")] },
+  });
+  await tick();
+
+  pressCard(document, "Tiếp");
+  await tick();
+  assert.ok(sent.some((m) => m.type === "tg:preview-step" && m.index === 1), "bước hỏng không được chặn cả bộ");
 });

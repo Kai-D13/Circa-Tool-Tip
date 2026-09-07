@@ -48,6 +48,8 @@ export const ERROR_CODES = {
   BAD_URL: "BAD_URL",
   /** A probe or preview arrived without the step, guide or site it needs. */
   BAD_STEP: "BAD_STEP",
+  /** The tab a job was running in was closed before it could finish. */
+  TAB_CLOSED: "TAB_CLOSED",
   INTERNAL: "INTERNAL",
 };
 

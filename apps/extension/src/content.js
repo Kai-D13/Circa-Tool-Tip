@@ -432,9 +432,13 @@
     }
 
     const target = RESOLVE.resolveTarget(step, domApi());
+    // Found is not the same as usable. A text mismatch means the page changed under the
+    // guide: the element is shown in RED so the author can see what the step is pointing
+    // at, and is never presented as a step that works.
+    const usable = RESOLVE.isActionableResolution(target);
     if (target?.element) {
       scrollTo(target.element);
-      ui.highlight(target.element, "ok");
+      ui.highlight(target.element, usable ? "ok" : "");
     } else {
       ui.hideBox();
     }
@@ -450,10 +454,12 @@
         // is exactly where nobody expects an order to be placed.
         note: !target
           ? "Không tìm thấy phần tử trên trang này."
-          : auto
-            ? "Khi chạy thật bước này TỰ bấm. Bản chạy thử chỉ tô sáng, không bấm hộ."
-            : "",
-        noteTone: target ? "good" : "bad",
+          : !usable
+            ? "Tìm thấy element theo selector nhưng TEXT trên trang đã khác — runtime sẽ không dùng element này."
+            : auto
+              ? "Khi chạy thật bước này TỰ bấm. Bản chạy thử chỉ tô sáng, không bấm hộ."
+              : "",
+        noteTone: usable ? "good" : "bad",
         actions: nav,
       },
       onPreviewAction,

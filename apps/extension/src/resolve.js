@@ -64,8 +64,26 @@
     return visible.length ? visible : elements;
   }
 
+  /** The one `via` that means "found something, but do not use it". */
+  var MISMATCH = "selector-text-mismatch";
+
   function hit(element, selector, index, via, count) {
     return { element: element, selector: selector, selectorIndex: index, via: via, count: count };
+  }
+
+  /**
+   * May this resolution be acted on?
+   *
+   * `resolveTarget` returns the text-mismatched element on purpose, because the probe has
+   * to be able to SAY what it found. But found is not the same as usable: the page changed
+   * under the guide, and pointing a tour — let alone an auto-click — at that element is
+   * how the wrong button gets pressed.
+   *
+   * Every caller decides with this one function. Probe, preview and the Batch 3 runtime
+   * disagreeing about it is exactly the drift this module exists to prevent.
+   */
+  function isActionableResolution(target) {
+    return !!(target && target.element && target.via !== MISMATCH);
   }
 
   /**
@@ -91,7 +109,7 @@
         if (!wanted || intent !== "exact" || normalize(api.textOf(pool[0])) === wanted) {
           return hit(pool[0], selectors[i], i, "selector", found.length);
         }
-        if (!mismatched) mismatched = hit(pool[0], selectors[i], i, "selector-text-mismatch", found.length);
+        if (!mismatched) mismatched = hit(pool[0], selectors[i], i, MISMATCH, found.length);
         continue;
       }
 
@@ -158,7 +176,7 @@
     var target = resolveTarget(step, api);
 
     return {
-      ok: !!target && target.via !== "selector-text-mismatch",
+      ok: isActionableResolution(target),
       candidates: candidates,
       matchText: wanted,
       resolved: target
@@ -169,7 +187,7 @@
   }
 
   function reasonFor(target, candidates, wanted, selectorCount) {
-    if (target && target.via === "selector-text-mismatch") {
+    if (target && target.via === MISMATCH) {
       return "Selector khớp đúng 1 element nhưng text trên trang đã khác — trang có thể đã đổi.";
     }
     if (target) {
@@ -193,6 +211,8 @@
   }
 
   root.TG_RESOLVE = Object.freeze({
+    MISMATCH: MISMATCH,
+    isActionableResolution: isActionableResolution,
     selectorsOf: selectorsOf,
     resolveTarget: resolveTarget,
     probeStep: probeStep,

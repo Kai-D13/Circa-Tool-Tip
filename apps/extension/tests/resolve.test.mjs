@@ -214,14 +214,17 @@ test("duplicate and blank selectors are ignored rather than probed twice", () =>
   assert.equal(report.candidates.length, 1);
 });
 
-test("probe and the runtime never disagree about which candidate wins", () => {
-  // A probe that used its own resolution rules would be a lie: it would report a step as
-  // fine that the tour then fails to resolve.
+test("probe and the runtime never disagree — including on whether it may be USED", () => {
+  // Comparing only selector/via missed the case that mattered: both agreed on the
+  // element, and then one of them treated it as a pass and the other as a failure.
   const cases = [
     { matches: { "#a": [el("Cài Đặt")] }, selectors: ["#a"] },
     { matches: { "#a": [el("X"), el("Cài Đặt")] }, selectors: ["#a"] },
     { matches: { "#a": [], "#b": [el("Cài Đặt")] }, selectors: ["#a", "#b"] },
     { matches: { button: [el("Cài Đặt")] }, selectors: ["#khong-co"] },
+    { matches: { "#a": [el("Thiết Lập")] }, selectors: ["#a"] }, // text lệch
+    { matches: {}, selectors: ["#a"] },
+    { matches: { "#a": [el("A"), el("B")] }, selectors: ["#a"] },
   ];
   for (const c of cases) {
     const s = step({ selectors: c.selectors });
@@ -229,7 +232,37 @@ test("probe and the runtime never disagree about which candidate wins", () => {
     const report = R.probeStep(s, api(c.matches));
     assert.equal(report.resolved?.selector, direct?.selector);
     assert.equal(report.resolved?.via, direct?.via);
+    assert.equal(
+      report.ok,
+      R.isActionableResolution(direct),
+      `probe và runtime bất đồng về việc có được dùng element này không: ${JSON.stringify(c.selectors)}`,
+    );
   }
+});
+
+test("P0 REGRESSION: a text-mismatched element is found but never actionable", () => {
+  // resolveTarget returns it so the probe can SAY what it found. Acting on it is how a
+  // tour — or worse, an auto-click — presses the wrong button after a redesign.
+  const moved = el("Thiết Lập");
+  const target = R.resolveTarget(step(), api({ "#basic-button": [moved] }));
+
+  assert.equal(target.element, moved, "vẫn phải trả element để chẩn đoán");
+  assert.equal(R.isActionableResolution(target), false, "nhưng không được phép dùng");
+  assert.equal(R.probeStep(step(), api({ "#basic-button": [moved] })).ok, false);
+});
+
+test("everything else that resolves IS actionable", () => {
+  const good = [
+    { matches: { "#basic-button": [el("Cài Đặt")] }, selectors: ["#basic-button"] },
+    { matches: { "#basic-button": [el("X"), el("Cài Đặt")] }, selectors: ["#basic-button"] },
+    { matches: { button: [el("Cài Đặt")] }, selectors: ["#khong-co"] },
+  ];
+  for (const c of good) {
+    const target = R.resolveTarget(step({ selectors: c.selectors }), api(c.matches));
+    assert.equal(R.isActionableResolution(target), true, JSON.stringify(c.selectors));
+  }
+  assert.equal(R.isActionableResolution(null), false);
+  assert.equal(R.isActionableResolution({ via: "selector" }), false, "không có element thì không dùng được");
 });
 
 test("the module refuses to invent its own text normalisation", () => {
