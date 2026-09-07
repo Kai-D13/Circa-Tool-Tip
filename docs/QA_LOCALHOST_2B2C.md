@@ -63,9 +63,9 @@ Mở một bộ POS đã gán site, mở rộng một bước có selector thậ
 | 3.4 | Đổi `matchText` thành chữ không có trên trang, giữ selector khớp đúng 1 | Chip đỏ, lý do nói **text trên trang đã khác** — không được báo đạt | |
 | 3.4b | **Vẫn ở bước đó**, bấm **Chạy thử** | Element được tô **viền đỏ** (để chẩn đoán), thẻ ghi "TEXT trên trang đã khác". **Tuyệt đối không** tô xanh | |
 | 3.4c | Bấm **Tiếp** ở bước hỏng đó | Vẫn đi tiếp được — một bước hỏng không làm kẹt cả bộ | |
-| 3.7 | Bấm kiểm tra selector rồi **đóng tab kiểm tra** trước khi nó kịp hiện kết quả | Nút thoát khỏi "Đang kiểm tra…", Portal báo tab bị đóng | |
 | 3.5 | Xoá hết selector của một bước | Nút bị khoá, lý do "Bước này chưa có selector nào để kiểm tra." | |
 | 3.6 | Kiểm tra bước thứ hai ngay sau bước thứ nhất | Tab cũ **đóng lại**, chỉ còn một tab kiểm tra | |
+| 3.7 | Bấm kiểm tra selector rồi **đóng tab kiểm tra** trước khi nó kịp hiện kết quả | Nút thoát khỏi "Đang kiểm tra…", Portal báo tab bị đóng | |
 
 3.1–3.4 dùng bước **chưa lưu** — đó là điểm chính: kiểm tra được trước khi lưu.
 
