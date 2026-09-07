@@ -3,6 +3,7 @@
 import { ACTION_TYPES, URL_MATCH_MODES, inferUrlMatchMode, type DraftStep } from "@circa/guide-schema";
 
 import { formatSelectors, parseSelectors, type StepIssues } from "../lib/guides/editor";
+import { summarizeProbe, type ProbeResult } from "../lib/guides/preview";
 import type { SiteOption } from "../lib/guides/types";
 
 const ACTION_LABEL: Record<string, string> = {
@@ -28,6 +29,9 @@ export function StepEditor({
   onMove,
   onDuplicate,
   onRemove,
+  probe,
+  probeBusy,
+  onProbe,
 }: {
   step: DraftStep;
   index: number;
@@ -39,6 +43,11 @@ export function StepEditor({
   onMove: (delta: number) => void;
   onDuplicate: () => void;
   onRemove: () => void;
+  /** Last answer from the page for THIS step, or null if it has not been checked. */
+  probe: ProbeResult | null;
+  probeBusy: boolean;
+  /** Disabled with a reason when the step cannot be checked at all. */
+  onProbe: { ok: boolean; reason: string; run: () => void };
 }) {
   const inferred = inferUrlMatchMode(step.urlPattern, undefined);
   const isWaitUrl = WAIT_URL.includes(step.action.type);
@@ -47,6 +56,8 @@ export function StepEditor({
   const flags = step.flags ?? [];
 
   const patchAction = (patch: Partial<DraftStep["action"]>) => onPatch({ action: { ...step.action, ...patch } });
+  const verdict = summarizeProbe(probe);
+  const VERDICT_CLASS: Record<string, string> = { ok: "chip chip-success", warn: "chip chip-warning", bad: "chip chip-danger", idle: "chip" };
 
   return (
     <details className="card stack" open={errs.length > 0}>
@@ -58,6 +69,7 @@ export function StepEditor({
           {errs.length ? <span className="chip chip-danger">{errs.length} lỗi</span> : null}
           {warns.length ? <span className="chip chip-warning">{warns.length} cảnh báo</span> : null}
           {flags.length ? <span className="chip chip-warning">{flags.length} flag</span> : null}
+          {verdict.tone !== "idle" ? <span className={VERDICT_CLASS[verdict.tone]}>{verdict.label}</span> : null}
         </span>
       </summary>
 
@@ -192,6 +204,40 @@ export function StepEditor({
           <label className="label">expectedUrl (URL đích sau khi bấm; để trống thì lấy urlPattern của bước sau)</label>
           <input className="input mono" value={step.action.expectedUrl} disabled={disabled} onChange={(e) => patchAction({ expectedUrl: e.target.value })} />
         </div>
+      ) : null}
+
+      {/* Kiểm tra selector chạy trên trang thật và KHÔNG ghi gì: nó chỉ đọc DOM rồi
+          báo về. Bước chưa lưu vẫn kiểm tra được, vì bước đi kèm trong message. */}
+      <div className="row" style={{ alignItems: "center" }}>
+        <button
+          className="btn btn-sm"
+          type="button"
+          disabled={disabled || probeBusy || !onProbe.ok}
+          title={onProbe.reason}
+          onClick={onProbe.run}
+        >
+          {probeBusy ? "Đang kiểm tra…" : "Kiểm tra selector trên trang"}
+        </button>
+        {probe ? (
+          <>
+            <span className={VERDICT_CLASS[verdict.tone]}>{verdict.label}</span>
+            <span className="muted">{verdict.detail}</span>
+          </>
+        ) : (
+          <span className="muted">{onProbe.ok ? "Mở trang của bước và đếm element khớp." : onProbe.reason}</span>
+        )}
+      </div>
+
+      {probe ? (
+        <ul className="mono" style={{ margin: 0, paddingLeft: 18 }}>
+          {probe.candidates.map((c, i) => (
+            <li key={c.selector + i}>
+              {c.invalid ? "sai cú pháp" : `${c.count} element`}
+              {c.textMatches ? ` · ${c.textMatches} khớp text` : ""} · {c.selector}
+              {probe.resolved?.selectorIndex === i ? <strong> ← đang dùng</strong> : null}
+            </li>
+          ))}
+        </ul>
       ) : null}
 
       <div className="row">

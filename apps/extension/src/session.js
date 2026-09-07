@@ -104,7 +104,17 @@ export function createRecorderStore(storage) {
      * Begin a session. Refuses to overwrite one that is still recording — that would
      * throw away steps the operator has already captured.
      */
-    async start({ id, guideId, site, startUrl, tabId = null, mode = "append", stepId = null }) {
+    async start({
+      id,
+      guideId,
+      site,
+      startUrl,
+      tabId = null,
+      mode = "append",
+      stepId = null,
+      kind = "record",
+      job = null,
+    }) {
       // A malformed payload is not "this session already exists" — the Portal needs to
       // tell the two apart to know whether retrying could ever help.
       if (!id) throw new SessionError(SESSION_ERRORS.INVALID_SESSION, "start: thiếu id phiên ghi");
@@ -130,8 +140,17 @@ export function createRecorderStore(storage) {
           tabId,
           mode,
           stepId,
+          // "record" captures clicks, "probe" checks one step's selectors, "preview" walks
+          // a draft guide. All three own a tab exclusively, which is why they share this
+          // store rather than each growing their own copy of the tab invariant.
+          kind,
+          job,
+          // `status` means ACTIVE, whatever the kind — "recording" is kept as the value so
+          // an existing session in storage stays readable across an extension reload.
           status: "recording",
           steps: [],
+          /** Which step a preview is showing. Meaningless for the other kinds. */
+          index: 0,
           startedAt: new Date().toISOString(),
         });
       });
@@ -178,6 +197,40 @@ export function createRecorderStore(storage) {
         const s = await read(sessionId);
         if (!s || s.status !== "recording") return null;
         return write({ ...s, steps: s.steps.slice(0, -1) });
+      });
+    },
+
+    /**
+     * Move a preview to another step.
+     *
+     * Persisted rather than kept in the page, because the whole point of a preview is to
+     * follow a guide across navigations — and a navigation throws the page away.
+     */
+    async setIndex(sessionId, index, fromTabId) {
+      return enqueue(async () => {
+        const s = await read(sessionId);
+        if (!s || s.status !== "recording") return null;
+        if (fromTabId !== undefined && s.tabId !== fromTabId) {
+          throw new SessionError(
+            SESSION_ERRORS.TAB_MISMATCH,
+            `Phiên "${sessionId}" đang ở tab ${s.tabId}, không phải tab ${fromTabId}.`,
+          );
+        }
+        // Not Number(index): Number(null) is 0, so a missing index would quietly become
+        // "back to step 1" instead of being reported as the malformed message it is.
+        if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
+          throw new SessionError(SESSION_ERRORS.INVALID_SESSION, `Chỉ số bước không hợp lệ: ${String(index)}`);
+        }
+        return write({ ...s, index });
+      });
+    },
+
+    /** Replace the job payload — a second probe reusing the tab of the first. */
+    async setJob(sessionId, job) {
+      return enqueue(async () => {
+        const s = await read(sessionId);
+        if (!s || s.status !== "recording") return null;
+        return write({ ...s, job });
       });
     },
 

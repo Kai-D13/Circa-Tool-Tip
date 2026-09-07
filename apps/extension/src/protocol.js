@@ -19,8 +19,18 @@ export const ONE_SHOT_TYPES = ["HELLO", "GET_RECORDING"];
 
 /** Messages carried over the long-lived `tg-recorder` port. */
 export const PORT_NAME = "tg-recorder";
-export const PORT_REQUEST_TYPES = ["START", "UNDO", "STOP"];
-export const PORT_EVENT_TYPES = ["READY", "STEP", "NAVIGATED", "ERROR", "DONE"];
+export const PORT_REQUEST_TYPES = ["START", "UNDO", "STOP", "PROBE_SELECTOR", "PREVIEW_GUIDE", "PREVIEW_STOP"];
+export const PORT_EVENT_TYPES = [
+  "READY",
+  "STEP",
+  "NAVIGATED",
+  "ERROR",
+  "DONE",
+  "PROBE_RESULT",
+  "PREVIEW_READY",
+  "PREVIEW_STEP",
+  "PREVIEW_DONE",
+];
 
 export const ERROR_CODES = {
   BAD_ENVELOPE: "BAD_ENVELOPE",
@@ -36,6 +46,8 @@ export const ERROR_CODES = {
   TAB_MISMATCH: "TAB_MISMATCH",
   /** The Portal asked the extension to open a URL it is not allowed to open. */
   BAD_URL: "BAD_URL",
+  /** A probe or preview arrived without the step, guide or site it needs. */
+  BAD_STEP: "BAD_STEP",
   INTERNAL: "INTERNAL",
 };
 
@@ -46,10 +58,10 @@ export const ERROR_CODES = {
  * page, over externally_connectable. These arrive from our own content script and are
  * authorised differently — by the tab they come from, not by origin alone.
  */
-export const CONTENT_TYPES = ["tg:hello", "tg:step", "tg:navigated"];
+export const CONTENT_TYPES = ["tg:hello", "tg:step", "tg:navigated", "tg:probe-result", "tg:preview-step"];
 
 /** Messages the service worker pushes down to a content script. */
-export const CONTENT_COMMANDS = ["tg:disarm", "tg:session"];
+export const CONTENT_COMMANDS = ["tg:disarm", "tg:session", "tg:probe"];
 
 export function ok(type, data = {}) {
   return { v: PROTOCOL_VERSION, ok: true, type, data };

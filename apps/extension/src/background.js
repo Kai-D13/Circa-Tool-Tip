@@ -38,6 +38,7 @@ const hub = createHub({
   store,
   tabs: {
     create: (options) => chrome.tabs.create(options),
+    remove: (tabId) => chrome.tabs.remove(tabId),
     sendMessage: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
   },
   targetOrigins: TARGET_ORIGINS,

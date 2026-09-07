@@ -19,7 +19,7 @@ import { ERROR_CODES, fail, isAllowedTargetUrl, ok } from "./protocol.js";
 /**
  * @param {object} deps
  * @param {object} deps.store           createRecorderStore(...)
- * @param {{create(opts):Promise<{id:number}>, sendMessage(tabId:number, msg:object):Promise<any>}} deps.tabs
+ * @param {{create(opts):Promise<{id:number}>, remove(tabId:number):Promise<any>, sendMessage(tabId:number, msg:object):Promise<any>}} deps.tabs
  * @param {string[]} deps.targetOrigins origins the extension may open and accept steps from
  * @param {{extVersion:string, schemaVersion:number|null}} deps.info
  */
@@ -71,6 +71,42 @@ export function createHub({ store, tabs, targetOrigins, info }) {
       default:
         return fail(type, ERROR_CODES.UNKNOWN_TYPE, `Chưa xử lý "${type}".`);
     }
+  }
+
+  /**
+   * Give a job its own fresh tab and drop the one it had.
+   *
+   * Deliberately not "navigate the existing tab": setting the same URL again may or may
+   * not reload, so a push to the content script would sometimes reach the old page and
+   * answer about it. A new tab has exactly one meaning.
+   */
+  async function moveToFreshTab(session, url) {
+    const previous = session.tabId;
+    const tab = await tabs.create({ url, active: true });
+    const attached = (await store.attachTab(session.id, tab.id)) ?? session;
+    if (previous !== null && previous !== undefined && previous !== tab.id) {
+      Promise.resolve(tabs.remove(previous)).catch(() => {});
+    }
+    return attached;
+  }
+
+  /** A step the resolver can actually work with. */
+  function usableStep(step) {
+    return !!step && typeof step === "object" && Array.isArray(step.selectors);
+  }
+
+  /**
+   * Start a job, or take over the session already running under this id.
+   *
+   * Probing step after step reuses one session, so the operator ends up with one tab
+   * rather than one tab per click.
+   */
+  async function openJob({ sessionId, guideId, site, url, kind, job }) {
+    const existing = await store.get(sessionId);
+    if (existing && existing.status === "recording") {
+      return (await store.setJob(sessionId, job)) ?? existing;
+    }
+    return store.start({ id: sessionId, guideId, site, startUrl: url, kind, job });
   }
 
   async function handlePort({ type, payload }, port) {
@@ -139,6 +175,74 @@ export function createHub({ store, tabs, targetOrigins, info }) {
         return;
       }
 
+      case "PROBE_SELECTOR": {
+        const url = String(payload.url || "");
+        if (!isAllowedTargetUrl(url, targetOrigins)) {
+          port.postMessage(fail("PROBE_SELECTOR", ERROR_CODES.BAD_URL, `URL "${url}" không thuộc site được phép.`));
+          return;
+        }
+        if (!usableStep(payload.step)) {
+          port.postMessage(
+            fail("PROBE_SELECTOR", ERROR_CODES.BAD_STEP, "Thiếu bước, hoặc bước không có danh sách selector."),
+          );
+          return;
+        }
+
+        const session = await openJob({
+          sessionId: payload.sessionId,
+          guideId: payload.guideId,
+          site: payload.site,
+          url,
+          kind: "probe",
+          job: { kind: "probe", probeId: String(payload.probeId || ""), step: payload.step },
+        });
+        ports.set(session.id, port);
+        // The answer does not come from here. The page has to load, resolve the selector
+        // against the real DOM, and report back as tg:probe-result.
+        await moveToFreshTab(session, url);
+        return;
+      }
+
+      case "PREVIEW_GUIDE": {
+        const url = String(payload.url || "");
+        if (!isAllowedTargetUrl(url, targetOrigins)) {
+          port.postMessage(fail("PREVIEW_GUIDE", ERROR_CODES.BAD_URL, `URL "${url}" không thuộc site được phép.`));
+          return;
+        }
+        const steps = payload.guide && payload.guide.steps;
+        if (!Array.isArray(steps) || !steps.length) {
+          port.postMessage(fail("PREVIEW_GUIDE", ERROR_CODES.BAD_STEP, "Bộ này chưa có bước nào để chạy thử."));
+          return;
+        }
+
+        const session = await openJob({
+          sessionId: payload.sessionId,
+          guideId: payload.guideId,
+          site: payload.site,
+          url,
+          kind: "preview",
+          // The DRAFT travels in this payload and is never read back from the database.
+          // That is what makes it a preview: nothing has been saved, and nothing needs to
+          // be. No release is touched either.
+          job: { kind: "preview", guide: payload.guide, sites: payload.sites ?? {} },
+        });
+        ports.set(session.id, port);
+        const attached = await moveToFreshTab(session, url);
+        port.postMessage(ok("PREVIEW_READY", { session: attached }));
+        return;
+      }
+
+      case "PREVIEW_STOP": {
+        const session = await store.stop(payload.sessionId);
+        if (!session) {
+          port.postMessage(fail("PREVIEW_STOP", ERROR_CODES.NO_SESSION, "Phiên chạy thử không tồn tại."));
+          return;
+        }
+        pushToTab(session.tabId, { type: "tg:disarm" });
+        port.postMessage(ok("PREVIEW_DONE", { session, reason: "stopped" }));
+        return;
+      }
+
       default:
         port.postMessage(fail(type, ERROR_CODES.UNKNOWN_TYPE, `Chưa xử lý "${type}".`));
     }
@@ -149,10 +253,11 @@ export function createHub({ store, tabs, targetOrigins, info }) {
       // A content script cannot know its own tab id; the worker is the only one who can
       // tell it. Every per-tab state key hangs off this value.
       case "tg:hello": {
-        // findByTab throws DUPLICATE_TAB when the one-recorder-per-tab invariant broke.
-        // Report it instead of handing the page an arbitrary session.
+        // findByTab throws DUPLICATE_TAB when the one-job-per-tab invariant broke. Report
+        // it instead of handing the page an arbitrary session.
         const session = await store.findByTab(tabId);
-        return ok("tg:hello", { tabId, recording: session });
+        // One reply for all three kinds; the page branches on session.kind.
+        return ok("tg:hello", { tabId, job: session });
       }
 
       case "tg:step": {
@@ -169,6 +274,38 @@ export function createHub({ store, tabs, targetOrigins, info }) {
         if (!session) return ok("tg:navigated", { ignored: true });
         pushToPortal(session.id, ok("NAVIGATED", { sessionId: session.id, url: String(raw.url || "") }));
         return ok("tg:navigated", { ignored: false });
+      }
+
+      case "tg:probe-result": {
+        const session = await store.findByTab(tabId);
+        if (!session || session.kind !== "probe") {
+          return fail("tg:probe-result", ERROR_CODES.NO_SESSION, "Tab này không đang kiểm tra selector.");
+        }
+        // A result for an earlier question, arriving after the operator moved on, must not
+        // overwrite the answer to the one they are looking at.
+        const probeId = String(raw.probeId || "");
+        if (probeId !== String((session.job && session.job.probeId) || "")) {
+          return ok("tg:probe-result", { ignored: true });
+        }
+        pushToPortal(session.id, ok("PROBE_RESULT", { probeId, url: String(raw.url || ""), result: raw.result }));
+        return ok("tg:probe-result", { ignored: false });
+      }
+
+      case "tg:preview-step": {
+        const session = await store.findByTab(tabId);
+        if (!session || session.kind !== "preview") {
+          return fail("tg:preview-step", ERROR_CODES.NO_SESSION, "Tab này không đang chạy thử bộ nào.");
+        }
+        if (raw.exit) {
+          const done = await store.stop(session.id);
+          pushToPortal(session.id, ok("PREVIEW_DONE", { session: done, reason: "exited" }));
+          return ok("tg:preview-step", { stopped: true });
+        }
+        const moved = await store.setIndex(session.id, raw.index, tabId);
+        if (!moved) return fail("tg:preview-step", ERROR_CODES.NO_SESSION, "Phiên chạy thử đã kết thúc.");
+        const total = (moved.job && moved.job.guide && moved.job.guide.steps.length) || 0;
+        pushToPortal(session.id, ok("PREVIEW_STEP", { index: moved.index, total }));
+        return ok("tg:preview-step", { index: moved.index });
       }
 
       default:

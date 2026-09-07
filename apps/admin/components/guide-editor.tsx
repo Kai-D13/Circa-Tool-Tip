@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { DraftStep } from "@circa/guide-schema";
 
 import {
@@ -22,11 +22,23 @@ import {
   validateForEditor,
   type GuideMetadata,
 } from "../lib/guides/editor";
+import {
+  newToolSessionId,
+  originsOf,
+  previewReadiness,
+  previewRequest,
+  probeReadiness,
+  probeRequest,
+  stepPageUrl,
+  type ProbeResult,
+} from "../lib/guides/preview";
 import { isConflictError, rpcDeleteGuide, rpcSaveGuide, rpcSetGuideStatus } from "../lib/guides/rpc";
 import type { GuideDetailRow, GuideStatus, SiteOption } from "../lib/guides/types";
 import { createClient } from "../lib/supabase/client";
+import { PreviewPanel } from "./preview-panel";
 import { RecorderPanel } from "./recorder-panel";
 import { StepEditor } from "./step-editor";
+import { useExtension, type ExtensionReply } from "./use-extension";
 
 type Saving = "idle" | "saving" | "saved" | "conflict";
 
@@ -50,6 +62,57 @@ export function GuideEditor({
 
   const [saving, setSaving] = useState<Saving>("idle");
   const [error, setError] = useState<string | null>(null);
+
+  /* ------------------------------------------------- công cụ chạy trên trang thật */
+
+  /**
+   * Probe and preview share one port. Both are read-only against the page and write
+   * nothing anywhere: a probe counts elements, a preview carries the draft in its own
+   * message. Neither touches Supabase, and neither can change a release.
+   */
+  const [probes, setProbes] = useState<Record<string, ProbeResult>>({});
+  const [probing, setProbing] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ running: boolean; index: number; total: number }>({
+    running: false,
+    index: 0,
+    total: 0,
+  });
+  const [toolError, setToolError] = useState<string | null>(null);
+  const probeSession = useRef<string>("");
+  const previewSession = useRef<string>("");
+
+  const onToolEvent = useCallback((reply: ExtensionReply) => {
+    if (!reply?.ok) {
+      setToolError(reply?.error ? `${reply.error.code}: ${reply.error.message}` : "Extension trả lời không hợp lệ.");
+      setProbing(null);
+      return;
+    }
+    const data = reply.data ?? {};
+    switch (reply.type) {
+      case "PROBE_RESULT": {
+        const probeId = String(data.probeId ?? "");
+        setProbes((current) => ({ ...current, [probeId]: data.result as ProbeResult }));
+        setProbing((current) => (current === probeId ? null : current));
+        break;
+      }
+      case "PREVIEW_READY": {
+        const session = data.session as { job?: { guide?: { steps?: unknown[] } } } | undefined;
+        setPreview({ running: true, index: 0, total: session?.job?.guide?.steps?.length ?? 0 });
+        setToolError(null);
+        break;
+      }
+      case "PREVIEW_STEP":
+        setPreview((current) => ({ ...current, index: Number(data.index ?? 0), total: Number(data.total ?? current.total) }));
+        break;
+      case "PREVIEW_DONE":
+        setPreview({ running: false, index: 0, total: 0 });
+        break;
+      default:
+        break;
+    }
+  }, []);
+
+  const ext = useExtension({ onEvent: onToolEvent });
 
   const siteCodes = useMemo(() => sites.map((s) => s.code), [sites]);
   const validation = useMemo(() => validateForEditor(meta, steps, status, siteCodes), [meta, steps, status, siteCodes]);
@@ -130,6 +193,56 @@ export function GuideEditor({
     }
   }
 
+  const origins = useMemo(() => originsOf(sites), [sites]);
+
+  function probeStepOnPage(step: DraftStep) {
+    setToolError(null);
+    if (!probeSession.current) probeSession.current = newToolSessionId("prb");
+    setProbing(step.id);
+    const sent = ext.send(
+      probeRequest({
+        sessionId: probeSession.current,
+        guideId: guide.id,
+        siteCode: meta.siteCode,
+        step,
+        url: stepPageUrl(step, meta.siteCode, meta.startUrl, origins),
+      }),
+    );
+    if (!sent) setProbing(null);
+  }
+
+  function startPreview() {
+    setToolError(null);
+    previewSession.current = newToolSessionId("pvw");
+    // serializeSteps: chạy thử đúng hình dạng sẽ được lưu, không phải state thô của form.
+    ext.send(
+      previewRequest({
+        sessionId: previewSession.current,
+        guideId: guide.id,
+        name: meta.name,
+        siteCode: meta.siteCode,
+        steps: serializeSteps(steps),
+        url: previewStartUrl,
+        origins,
+      }),
+    );
+  }
+
+  function stopPreview() {
+    ext.send({ v: 1, type: "PREVIEW_STOP", payload: { sessionId: previewSession.current } });
+    setPreview({ running: false, index: 0, total: 0 });
+  }
+
+  const previewStartUrl = steps.length
+    ? stepPageUrl(steps[0], meta.siteCode, meta.startUrl, origins)
+    : "";
+  const previewReady = previewReadiness({
+    extensionId: ext.extensionId,
+    siteCode: meta.siteCode,
+    steps,
+    url: previewStartUrl,
+  });
+
   const publishable = canPublish(validation, meta.siteCode);
   const statusState = { current: status, dirty, busy, publishable, hasSite: !!meta.siteCode };
 
@@ -203,6 +316,21 @@ export function GuideEditor({
         onInsert={(append) => updateSteps(append(steps))}
       />
 
+      <PreviewPanel
+        ready={previewReady}
+        running={preview.running}
+        live={ext.live}
+        url={previewStartUrl}
+        index={preview.index}
+        total={preview.total}
+        dirty={dirty}
+        disabled={busy}
+        onStart={startPreview}
+        onStop={stopPreview}
+      />
+
+      {toolError ? <div className="alert alert-danger">{toolError}</div> : null}
+
       {/* ------------------------------------------------------------ steps */}
       <div className="row" style={{ justifyContent: "space-between" }}>
         <strong>{steps.length} bước</strong>
@@ -228,6 +356,17 @@ export function GuideEditor({
               onMove={(delta) => updateSteps(moveStep(steps, i, delta))}
               onDuplicate={() => updateSteps(insertStepAfter(steps, i, { ...s, id: newStepId(), flags: undefined }))}
               onRemove={() => updateSteps(removeStep(steps, s.id))}
+              probe={probes[s.id] ?? null}
+              probeBusy={probing === s.id}
+              onProbe={{
+                ...probeReadiness({
+                  extensionId: ext.extensionId,
+                  siteCode: meta.siteCode,
+                  step: s,
+                  url: stepPageUrl(s, meta.siteCode, meta.startUrl, origins),
+                }),
+                run: () => probeStepOnPage(s),
+              }}
             />
           ))}
         </div>

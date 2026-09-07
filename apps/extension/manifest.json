@@ -22,7 +22,13 @@
         "https://pos.v2.circa.vn/*",
         "https://admin.v2.circa.vn/*"
       ],
-      "js": ["vendor/guide-schema.global.js", "selector.js", "content.js"],
+      "js": [
+        "vendor/guide-schema.global.js",
+        "selector.js",
+        "resolve.js",
+        "overlay.js",
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
