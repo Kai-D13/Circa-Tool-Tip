@@ -220,10 +220,13 @@ export interface StatusActionState {
 /**
  * Status changes bump updated_at server-side, which remounts the editor and throws away
  * unsaved edits — so every status button is locked while there are unsaved changes, not
- * just "Đánh dấu published".
+ * just the one that approves the guide for release.
  *
- * A site-less guide can only stay unassigned: offering "Chuyển về draft" or "Archive"
+ * A site-less guide can only stay unassigned: offering the draft or archive buttons
  * there just produces a database error the operator cannot act on.
+ *
+ * Wording for all three buttons lives in ./status — this file decides only whether they
+ * are usable.
  */
 export function canChangeStatus(target: GuideStatus, state: StatusActionState): boolean {
   if (state.busy || state.dirty) return false;

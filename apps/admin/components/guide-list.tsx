@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { statusChipClass, statusLabel } from "../lib/guides/status";
 import type { GuideRow } from "../lib/guides/types";
 
 function SiteChip({ site }: { site: string | null }) {
@@ -9,9 +10,7 @@ function SiteChip({ site }: { site: string | null }) {
 }
 
 function StatusChip({ status }: { status: GuideRow["status"] }) {
-  const cls =
-    status === "published" ? "chip-success" : status === "unassigned" ? "chip-warning" : status === "archived" ? "chip-none" : "";
-  return <span className={`chip ${cls}`}>{status}</span>;
+  return <span className={statusChipClass(status)}>{statusLabel(status)}</span>;
 }
 
 export function GuideList({ guides }: { guides: GuideRow[] }) {

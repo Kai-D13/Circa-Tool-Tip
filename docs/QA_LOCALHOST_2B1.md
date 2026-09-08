@@ -50,12 +50,12 @@ Chọn **một** bộ, ghi lại tên: ______________________
 | 3.1 | Xoá trắng **Tiêu đề** của một bước | Bước đó hiện cảnh báo vàng "thiếu tiêu đề"; **vẫn lưu được** | |
 | 3.2 | Trả lại tiêu đề | Cảnh báo biến mất | |
 | 3.3 | Đổi action của một bước sang `auto_click_next` rồi xoá trắng ô selector | Bước đó hiện **lỗi đỏ** "action TỰ click nhưng chưa chọn phần tử" | |
-| 3.4 | Khi đang có lỗi đỏ, nhìn nút **Đánh dấu published** | Nút **bị khoá**, dưới có dòng giải thích còn N lỗi validate | |
+| 3.4 | Khi đang có lỗi đỏ, nhìn nút **Duyệt cho lần phát hành tiếp theo** | Nút **bị khoá**, dưới có dòng giải thích còn N lỗi validate | |
 | 3.5 | Bấm **Lưu thay đổi** khi đang có lỗi | **Vẫn lưu được** (lỗi không chặn lưu, chỉ chặn publish) | |
-| 3.6 | Hoàn tác: trả action và selector về như cũ, lưu | Hết lỗi; nút published mở lại (nhưng **đừng bấm**) | |
+| 3.6 | Hoàn tác: trả action và selector về như cũ, lưu | Hết lỗi; nút duyệt mở lại (nhưng **đừng bấm**) | |
 | 3.7 | Xoá trắng **Tên bộ** rồi sửa thêm tiêu đề một bước, bấm lưu | Báo lỗi "Tên bộ không được rỗng". F5 lại: **cả tên lẫn tiêu đề bước đều nguyên như cũ** — không có chuyện step đã lưu còn metadata thì chưa | |
 | 3.8 | Với bộ đã có site, mở dropdown **Site** | **Không** còn lựa chọn "— chưa gán —" (database không cho xoá site của bộ đã phân loại) | |
-| 3.9 | Sửa bất kỳ trường nào (chưa lưu), nhìn ba nút trạng thái | **Cả ba** nút "Chuyển về draft", "Đánh dấu published", "Archive" đều **bị khoá**, tooltip "Lưu thay đổi trước" | |
+| 3.9 | Sửa bất kỳ trường nào (chưa lưu), nhìn ba nút trạng thái | **Cả ba** nút "Chuyển về bản nháp", "Duyệt cho lần phát hành tiếp theo", "Lưu trữ" đều **bị khoá**, tooltip "Lưu thay đổi trước" | |
 
 ## 4. Xung đột hai tab — `40001`
 
@@ -87,7 +87,7 @@ Bước 5.5 bắt buộc: kết thúc QA phải trở lại đúng 48 guide / 40
 Sau khi xong, kiểm tra ở `/guides`:
 
 - Tổng **48**, step **409**
-- Chưa phân loại **0**, draft **48**, published **0**, archived **0**
+- Chưa phân loại **0**, Bản nháp **48**, Đã duyệt cho lần phát hành tiếp theo **0**, Đã lưu trữ **0**
 - POS 13 + Admin 35
 
 Nếu bộ thử ở mục 2 còn ghi chú `QA 2B.1` thì xoá ghi chú đó đi rồi lưu, để dữ liệu về

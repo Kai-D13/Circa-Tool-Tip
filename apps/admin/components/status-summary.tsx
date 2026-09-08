@@ -1,12 +1,13 @@
+import { GUIDE_STATUS_LABEL } from "../lib/guides/status";
 import type { GuideCounts } from "../lib/guides/types";
 
 export function StatusSummary({ counts }: { counts: GuideCounts }) {
   const items: Array<{ label: string; value: number }> = [
     { label: "Tổng", value: counts.total },
-    { label: "Chưa phân loại", value: counts.unassigned },
-    { label: "Draft", value: counts.draft },
-    { label: "Published", value: counts.published },
-    { label: "Archived", value: counts.archived },
+    { label: GUIDE_STATUS_LABEL.unassigned, value: counts.unassigned },
+    { label: GUIDE_STATUS_LABEL.draft, value: counts.draft },
+    { label: GUIDE_STATUS_LABEL.published, value: counts.published },
+    { label: GUIDE_STATUS_LABEL.archived, value: counts.archived },
   ];
   return (
     <div className="summary">

@@ -5,6 +5,7 @@ const NAV = [
   { href: "/guides", label: "Bộ hướng dẫn" },
   { href: "/guides/import", label: "Import" },
   { href: "/guides/triage", label: "Phân loại" },
+  { href: "/releases", label: "Phát hành" },
 ] as const;
 
 export function AppShell({

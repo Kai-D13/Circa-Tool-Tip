@@ -28,8 +28,8 @@ export default async function GuideDetailPage({ params }: { params: Promise<{ id
       <p style={{ margin: "0 0 8px" }}><Link href="/guides">← Danh sách bộ hướng dẫn</Link></p>
       <h1 className="page-title">{detail.guide.name}</h1>
       <p className="page-lead">
-        Sửa xong bấm <strong>Lưu thay đổi</strong>. Cảnh báo vẫn lưu được; lỗi thì phải sửa trước khi
-        đánh dấu published.
+        Sửa xong bấm <strong>Lưu thay đổi</strong>. Cảnh báo vẫn lưu được; lỗi thì phải sửa trước khi duyệt
+        bộ này cho lần phát hành tiếp theo.
       </p>
       {/* key forces a fresh editor state after router.refresh() picks up a new updated_at */}
       <GuideEditor key={detail.guide.updated_at} guide={detail.guide} sites={sites} publishError={detail.publishError} />

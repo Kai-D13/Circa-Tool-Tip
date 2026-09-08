@@ -6,6 +6,9 @@ import type {
   GuideStatus,
   ImportResult,
   ListGuidesResult,
+  ListReleasesResult,
+  PublishResult,
+  RollbackResult,
   SaveGuideResult,
   SaveStepsResult,
   UpsertGuideResult,
@@ -129,6 +132,23 @@ export function buildSetStatusArgs(guideId: string, status: GuideStatus) {
   return { p_guide_id: guideId, p_status: status };
 }
 
+export function buildPublishArgs(site: string, note: string) {
+  return { p_site: site, p_note: note.trim() };
+}
+
+/**
+ * No note parameter, deliberately. `admin_rollback_site` writes its own
+ * (`format('Rollback về revision %s', old.revision)`) and has no `p_note` — adding one
+ * here would be a parameter the database refuses.
+ */
+export function buildRollbackArgs(site: string, releaseId: string) {
+  return { p_site: site, p_release_id: releaseId };
+}
+
+export function buildListReleasesArgs(site: string) {
+  return { p_site: site };
+}
+
 export function buildDeleteGuideArgs(guideId: string) {
   return { p_guide_id: guideId };
 }
@@ -214,4 +234,39 @@ export async function rpcDeleteGuide(
 ): Promise<{ ok: boolean; guideId: string; name: string }> {
   const r = await supabase.rpc("admin_delete_guide", buildDeleteGuideArgs(guideId));
   return unwrap(r, "admin_delete_guide");
+}
+
+/* ------------------------------------------------------------------- releases */
+
+export async function rpcListReleases(supabase: SupabaseClient, site: string): Promise<ListReleasesResult> {
+  const r = await supabase.rpc("admin_list_releases", buildListReleasesArgs(site));
+  return unwrap<ListReleasesResult>(r, "admin_list_releases");
+}
+
+/**
+ * Build and publish a release for one site.
+ *
+ * Everything that decides WHAT ships is server-side: the payload is assembled from
+ * `draft_steps` inside the same statement that mints the revision number, and the
+ * checksum is `sha256(payload::text)` computed in SQL. The client sends a site and a
+ * note, nothing else — it cannot reproduce that checksum (Postgres and JavaScript
+ * serialise JSON differently) and must never try.
+ */
+export async function rpcPublishSite(supabase: SupabaseClient, site: string, note: string): Promise<PublishResult> {
+  const r = await supabase.rpc("admin_publish_site", buildPublishArgs(site, note));
+  return unwrap<PublishResult>(r, "admin_publish_site");
+}
+
+/**
+ * Roll a site back to an earlier release by minting a NEW, higher revision that carries
+ * the old payload. Revisions never go down: the extension refuses a downgrade, so a
+ * lowered number would strand every machine that already has the higher one.
+ */
+export async function rpcRollbackSite(
+  supabase: SupabaseClient,
+  site: string,
+  releaseId: string,
+): Promise<RollbackResult> {
+  const r = await supabase.rpc("admin_rollback_site", buildRollbackArgs(site, releaseId));
+  return unwrap<RollbackResult>(r, "admin_rollback_site");
 }

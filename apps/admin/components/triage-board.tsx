@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 
 import { retryTargets, runBulkAssign, type BulkResult } from "../lib/guides/bulk-assign";
 import { rpcAssignSite } from "../lib/guides/rpc";
+import { GUIDE_STATUS_LABEL } from "../lib/guides/status";
 import {
   DEFAULT_FILTER,
   applyAssignment,
@@ -105,7 +106,7 @@ export function TriageBoard({ initialGuides }: { initialGuides: GuideRow[] }) {
         <div className="field">
           <label className="label" htmlFor="f-scope">Hiển thị</label>
           <select id="f-scope" className="select" value={filter.scope} onChange={(e) => setFilter({ ...filter, scope: e.target.value as TriageFilter["scope"] })}>
-            <option value="unassigned">Chưa phân loại</option>
+            <option value="unassigned">{GUIDE_STATUS_LABEL.unassigned}</option>
             <option value="pos">POS</option>
             <option value="admin">Admin</option>
             <option value="all">Tất cả</option>

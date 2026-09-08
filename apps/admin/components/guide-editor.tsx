@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useMemo, useRef, useState } from "react";
-import type { DraftStep } from "@circa/guide-schema";
+import { FLAGS, type DraftStep } from "@circa/guide-schema";
 
 import {
   blankStep,
@@ -33,6 +33,14 @@ import {
   type ProbeResult,
 } from "../lib/guides/preview";
 import { isConflictError, rpcDeleteGuide, rpcSaveGuide, rpcSetGuideStatus } from "../lib/guides/rpc";
+import {
+  APPROVE_BUTTON_LABEL,
+  ARCHIVE_BUTTON_LABEL,
+  TO_DRAFT_BUTTON_LABEL,
+  needsStatusConfirmation,
+  statusChipClass,
+  statusLabel,
+} from "../lib/guides/status";
 import type { GuideDetailRow, GuideStatus, SiteOption } from "../lib/guides/types";
 import { createClient } from "../lib/supabase/client";
 import { PreviewPanel } from "./preview-panel";
@@ -62,6 +70,8 @@ export function GuideEditor({
 
   const [saving, setSaving] = useState<Saving>("idle");
   const [error, setError] = useState<string | null>(null);
+  /** Set when a status change needs a human to look at it first. */
+  const [pendingStatus, setPendingStatus] = useState<GuideStatus | null>(null);
 
   /* ------------------------------------------------- công cụ chạy trên trang thật */
 
@@ -166,6 +176,22 @@ export function GuideEditor({
     }
   }
 
+  /**
+   * Approving a guide that auto-clicks is the one status change worth stopping for.
+   *
+   * 360 of the 409 legacy steps auto-click, and a step whose selector has no text anchor
+   * can resolve to the wrong element — at which point the guide presses a real button in
+   * a real POS. Flags never block (Plan v1.1 §P0-7); this asks, and the Admin decides.
+   */
+  function requestStatus(next: GuideStatus) {
+    setError(null);
+    if (needsStatusConfirmation(next, guide.validation)) {
+      setPendingStatus(next);
+      return;
+    }
+    void changeStatus(next);
+  }
+
   async function changeStatus(next: GuideStatus) {
     setSaving("saving");
     setError(null);
@@ -244,6 +270,7 @@ export function GuideEditor({
   });
 
   const publishable = canPublish(validation, meta.siteCode);
+  const autoClickSteps = steps.filter((s) => (s.flags ?? []).includes(FLAGS.AUTO_CLICK_UNANCHORED)).length;
   const statusState = { current: status, dirty, busy, publishable, hasSite: !!meta.siteCode };
 
   return (
@@ -340,7 +367,7 @@ export function GuideEditor({
       </div>
 
       {steps.length === 0 ? (
-        <div className="card muted">Bộ này chưa có bước nào. Thêm ít nhất một bước trước khi publish.</div>
+        <div className="card muted">Bộ này chưa có bước nào. Thêm ít nhất một bước trước khi duyệt phát hành.</div>
       ) : (
         <div className="stack">
           {steps.map((s, i) => (
@@ -381,7 +408,7 @@ export function GuideEditor({
           {saving === "saved" ? <span className="chip chip-success">Đã lưu</span> : null}
           {dirty ? <span className="chip chip-warning">Có thay đổi chưa lưu</span> : null}
           <span className="muted" style={{ marginLeft: "auto" }}>
-            Trạng thái: <span className="chip">{status}</span>
+            Trạng thái: <span className={statusChipClass(status)}>{statusLabel(status)}</span>
           </span>
         </div>
 
@@ -393,27 +420,27 @@ export function GuideEditor({
             type="button"
             disabled={!canChangeStatus("draft", statusState)}
             title={dirty ? "Lưu thay đổi trước" : undefined}
-            onClick={() => changeStatus("draft")}
+            onClick={() => requestStatus("draft")}
           >
-            Chuyển về draft
+            {TO_DRAFT_BUTTON_LABEL}
           </button>
           <button
             className="btn btn-sm"
             type="button"
             disabled={!canChangeStatus("published", statusState)}
             title={dirty ? "Lưu thay đổi trước" : !publishable ? "Còn lỗi validate hoặc chưa gán site" : undefined}
-            onClick={() => changeStatus("published")}
+            onClick={() => requestStatus("published")}
           >
-            Đánh dấu published
+            {APPROVE_BUTTON_LABEL}
           </button>
           <button
             className="btn btn-sm"
             type="button"
             disabled={!canChangeStatus("archived", statusState)}
             title={dirty ? "Lưu thay đổi trước" : undefined}
-            onClick={() => changeStatus("archived")}
+            onClick={() => requestStatus("archived")}
           >
-            Archive
+            {ARCHIVE_BUTTON_LABEL}
           </button>
           <button
             className="btn btn-sm"
@@ -427,10 +454,37 @@ export function GuideEditor({
           </button>
         </div>
 
+        {pendingStatus ? (
+          <div className="card stack" role="dialog" aria-labelledby="confirm-status">
+            <strong id="confirm-status">Bộ này có bước tự bấm</strong>
+            <p style={{ margin: 0 }}>
+              {autoClickSteps > 0 ? <>Có <strong>{autoClickSteps} bước</strong> tự bấm mà selector không có text để bám. </> : null}
+              Khi chạy thật, một bước resolve sai sẽ bấm nhầm nút trên POS của nhân viên. Duyệt xong bộ này sẽ vào bản
+              phát hành tiếp theo.
+            </p>
+            <div className="row">
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={() => {
+                  const next = pendingStatus;
+                  setPendingStatus(null);
+                  void changeStatus(next);
+                }}
+              >
+                Vẫn duyệt
+              </button>
+              <button className="btn" type="button" onClick={() => setPendingStatus(null)}>
+                Huỷ
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {!publishable ? (
           <div className="muted">
-            Chưa publish được: {validation.errors.length ? `${validation.errors.length} lỗi validate` : "chưa gán site"}.
-            Cảnh báo thì vẫn lưu và publish được.
+            Chưa duyệt được: {validation.errors.length ? `${validation.errors.length} lỗi validate` : "chưa gán site"}.
+            Cảnh báo thì vẫn lưu và duyệt được.
           </div>
         ) : null}
         {publishError ? <div className="alert alert-warning">Server báo: {publishError}</div> : null}

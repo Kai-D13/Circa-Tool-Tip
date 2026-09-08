@@ -14,24 +14,27 @@ Google Apps Script). **Không sửa repo cũ** — nó vẫn đang chạy produc
 | 1A | Monorepo, guide-schema v5, unit test, legacy importer, migration files | Xong |
 | 1B | Chạy migration 0001–0004 + RPC test + seed | Xong — `ALL GUIDE RPC TESTS PASSED` trên project thật |
 | 2A | Admin Portal: login · import · triage | Xong — 48 guide / 409 step / 0 unassigned / POS 13 + Admin 35 |
-| 2B.1 | Guide editor (metadata, step CRUD, validate, conflict 40001) | Code xong, chờ QA — [`docs/QA_LOCALHOST_2B1.md`](docs/QA_LOCALHOST_2B1.md) |
-| 2B.2A | Nền tảng extension MV3: manifest, service worker, giao thức message, state phiên ghi | Code xong, chờ QA — [`docs/QA_LOCALHOST_2B2A.md`](docs/QA_LOCALHOST_2B2A.md) |
-| 2B.2B | Recorder chọn element trên POS/Admin | Chưa bắt đầu |
-| 2B.2C | Probe selector + preview draft | Chưa bắt đầu |
-| 2B.3 | Publish / release / rollback | Chưa bắt đầu |
-| 3 | Extension viewer + sync + UI adapter | Chưa bắt đầu |
+| 2B.1 | Guide editor (metadata, step CRUD, validate, conflict 40001) | Xong — QA pass ([`docs/QA_LOCALHOST_2B1.md`](docs/QA_LOCALHOST_2B1.md)) |
+| 2B.2A | Nền tảng extension MV3: manifest, service worker, giao thức message, state phiên ghi | Xong — QA pass ([`docs/QA_LOCALHOST_2B2A.md`](docs/QA_LOCALHOST_2B2A.md)) |
+| 2B.2B | Recorder chọn element trên POS/Admin | Xong — QA pass ([`docs/QA_LOCALHOST_2B2B.md`](docs/QA_LOCALHOST_2B2B.md)) |
+| 2B.2C | Probe selector + preview draft | Xong — QA pass ([`docs/QA_LOCALHOST_2B2C.md`](docs/QA_LOCALHOST_2B2C.md)) |
+| 2B.3 | Portal phát hành: publish / rollback theo site | Code xong, chờ QA — [`docs/QA_LOCALHOST_2B3.md`](docs/QA_LOCALHOST_2B3.md) |
+| 3A | Extension đồng bộ release + cache 15 phút | Chưa bắt đầu |
+| 3B | Runtime chạy guide thật trên POS/Admin | Chưa bắt đầu |
+| 3C | Tab Tool-tip + menu hướng dẫn (UI adapter POS/Admin) | Chưa bắt đầu |
+| 3D | Integration + đóng gói | Chưa bắt đầu |
 | 4 | QA 2 pha + Chrome Web Store Unlisted | Chưa bắt đầu |
 
 ## Cấu trúc
 
 ```
 apps/admin/            Next.js 16 Admin Portal          (2A: login/import/triage)
-apps/extension/        Chrome MV3 (2B.2A: nền tảng; build -> dist/unpacked)
+apps/extension/        Chrome MV3: ghi hướng dẫn, probe selector, chạy thử (build -> dist/unpacked)
 packages/guide-schema/ Schema v5 + validator + URL matcher + checksum + flags
 scripts/import-legacy/ Importer v4 -> v5
 supabase/              migrations · rollback · seed · tests
 data/                  Artifact importer sinh ra
-docs/                  Plan, import report, migration runbook
+docs/                  Plan, import report, migration runbook, checklist QA từng batch
 ```
 
 ## Yêu cầu

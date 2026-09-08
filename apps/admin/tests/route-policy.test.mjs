@@ -6,7 +6,15 @@ import { HOME_PATH, LOGIN_PATH, isPublicPath, resolveRouteAction } from "../lib/
 test("an anonymous visitor is sent to login from any protected page", () => {
   assert.equal(resolveRouteAction("/guides", false), "redirect-login");
   assert.equal(resolveRouteAction("/guides/triage", false), "redirect-login");
+  assert.equal(resolveRouteAction("/releases", false), "redirect-login");
   assert.equal(resolveRouteAction("/", false), "redirect-login");
+});
+
+test("phát hành không phải trang công khai", () => {
+  // Chính sách là deny-by-default: chỉ PUBLIC_PATHS được miễn. Thêm /releases vào đó mới
+  // là lỗi, còn ở đây chỉ cần khẳng định nó KHÔNG lọt vào.
+  assert.ok(!isPublicPath("/releases"));
+  assert.equal(resolveRouteAction("/releases", true), "allow");
 });
 
 test("public pages stay reachable without a session", () => {

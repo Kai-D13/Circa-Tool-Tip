@@ -13,6 +13,9 @@ import {
   buildGetGuideArgs,
   buildImportArgs,
   buildListArgs,
+  buildListReleasesArgs,
+  buildPublishArgs,
+  buildRollbackArgs,
   buildSaveGuideArgs,
   buildSaveStepsArgs,
   buildSetStatusArgs,
@@ -23,10 +26,18 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Signatures live across several migrations; read them all so a test can reference any.
-const SQL = ["20260906_0003_guide_rpcs.sql", "20260906_0005_atomic_guide_save.sql"]
+const SQL = [
+  "20260906_0003_guide_rpcs.sql",
+  "20260906_0004_release_rpcs.sql",
+  "20260906_0005_atomic_guide_save.sql",
+]
   .map((f) => readFileSync(resolve(HERE, "../../../supabase/migrations/", f), "utf8"))
   .join("\n");
 const EDITOR_SRC = readFileSync(resolve(HERE, "../components/guide-editor.tsx"), "utf8");
+const RPC_SRC = readFileSync(resolve(HERE, "../lib/guides/rpc.ts"), "utf8");
+const RELEASES_SRC = readFileSync(resolve(HERE, "../lib/guides/releases.ts"), "utf8");
+const PANEL_SRC = readFileSync(resolve(HERE, "../components/release-panel.tsx"), "utf8");
+const RELEASES_PAGE_SRC = readFileSync(resolve(HERE, "../app/releases/page.tsx"), "utf8");
 
 /**
  * Extract the parameter names of a plpgsql function from the migration source.
@@ -54,6 +65,9 @@ test("the signature parser itself finds every parameter", () => {
   assert.equal(sqlParams("admin_upsert_guide").length, 7);
   assert.equal(sqlParams("admin_save_guide_steps").length, 4);
   assert.equal(sqlParams("admin_delete_guide").length, 1);
+  assert.deepEqual(sqlParams("admin_publish_site"), ["p_site", "p_note"]);
+  assert.deepEqual(sqlParams("admin_rollback_site"), ["p_site", "p_release_id"]);
+  assert.deepEqual(sqlParams("admin_list_releases"), ["p_site"]);
 });
 
 test("admin_import_legacy args match the SQL signature", () => {
@@ -159,16 +173,18 @@ test("P0: the editor saves through the atomic RPC only, never the old two-call c
  * lands before the opening `create` and silently yields an empty string — every assertion
  * against it would then pass or fail for the wrong reason.
  */
-function atomicSaveBody() {
-  const start = SQL.indexOf("create or replace function public.admin_save_guide(");
-  assert.ok(start >= 0, "không tìm thấy admin_save_guide trong migration");
-  const fn = SQL.slice(start);
-  const end = fn.indexOf("revoke all on function public.admin_save_guide(");
-  assert.ok(end > 0, "không tìm thấy phần revoke của admin_save_guide");
-  const body = fn.slice(0, end);
-  assert.ok(body.length > 500, "thân hàm rỗng bất thường — kiểm tra lại cách cắt chuỗi");
+function fnBody(fn) {
+  const start = SQL.indexOf(`create or replace function public.${fn}(`);
+  assert.ok(start >= 0, `không tìm thấy ${fn} trong migration`);
+  const rest = SQL.slice(start);
+  const end = rest.indexOf(`revoke all on function public.${fn}(`);
+  assert.ok(end > 0, `không tìm thấy phần revoke của ${fn}`);
+  const body = rest.slice(0, end);
+  assert.ok(body.length > 300, "thân hàm rỗng bất thường — kiểm tra lại cách cắt chuỗi");
   return body;
 }
+
+const atomicSaveBody = () => fnBody("admin_save_guide");
 
 test("the atomic RPC writes everything in one UPDATE, guarded in the WHERE", () => {
   const body = atomicSaveBody();
@@ -209,4 +225,96 @@ test("not-found is recognised and kept distinct from a conflict", () => {
   assert.ok(!isConflictError(notFound));
   assert.ok(!isNotFoundError(new RpcError("x", "mạng hỏng", "")));
   assert.ok(!isNotFoundError(new Error("P0002")));
+});
+
+/* ------------------------------------------------ release RPCs (migration 0004) */
+
+test("admin_publish_site args match the SQL signature", () => {
+  const args = buildPublishArgs("pos", "  sửa selector Cài Đặt  ");
+  assert.deepEqual(Object.keys(args).sort(), sqlParams("admin_publish_site").sort());
+  assert.equal(args.p_note, "sửa selector Cài Đặt", "ghi chú được trim trước khi gửi");
+});
+
+test("admin_rollback_site args match the SQL signature", () => {
+  const args = buildRollbackArgs("pos", "rel-3");
+  assert.deepEqual(Object.keys(args).sort(), sqlParams("admin_rollback_site").sort());
+});
+
+test("admin_list_releases args match the SQL signature", () => {
+  assert.deepEqual(Object.keys(buildListReleasesArgs("pos")).sort(), sqlParams("admin_list_releases").sort());
+});
+
+test("rollback không nhận ghi chú — SQL tự viết lấy", () => {
+  // Thêm p_note vào wrapper sẽ là một tham số database từ chối.
+  assert.ok(!sqlParams("admin_rollback_site").includes("p_note"));
+  assert.match(fnBody("admin_rollback_site"), /format\('Rollback về revision %s', v_old\.revision\)/);
+  const wrapper = RPC_SRC.slice(RPC_SRC.indexOf("buildRollbackArgs"), RPC_SRC.indexOf("buildListReleasesArgs"));
+  assert.ok(!/p_note/.test(wrapper));
+});
+
+test("publish xếp hàng theo site và khoá các guide sắp vào release", () => {
+  // Hai lần publish đồng thời phải xếp hàng thay vì cùng đọc max(revision).
+  const body = fnBody("admin_publish_site");
+  assert.match(body, /pg_advisory_xact_lock\(hashtext\('circa_tooltip_release:' \|\| p_site\)\)/);
+  assert.match(body, /status = 'published'[\s\S]{0,40}for update/);
+});
+
+test("publish từ chối site không có bộ nào đã duyệt", () => {
+  assert.match(fnBody("admin_publish_site"), /if v_guide_count = 0 then[\s\S]*?errcode = '22023'/);
+});
+
+test("revision do SQL sinh bằng max+1, client không được truyền vào", () => {
+  const params = sqlParams("admin_publish_site");
+  assert.match(fnBody("admin_publish_site"), /coalesce\(max\(revision\), 0\) \+ 1/);
+  assert.ok(!params.includes("p_revision"));
+  assert.ok(!params.includes("p_checksum"), "client không được truyền checksum");
+});
+
+test("P0: checksum do SQL tính, không file client nào tính lại", () => {
+  // sha256(jsonb::text) của Postgres không tái tạo được từ JS — canonical JSON hai bên
+  // sắp xếp key khác nhau. Client tính lại là tự tạo ra một sự bất đồng im lặng.
+  assert.match(fnBody("admin_publish_site"), /encode\(sha256\(convert_to\(/);
+  assert.match(fnBody("admin_rollback_site"), /encode\(sha256\(/);
+  // Bỏ comment trước khi soi: một comment giải thích "SQL tính sha256(...)" là đúng,
+  // chỉ code thật sự gọi hàm băm mới là sai.
+  const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  for (const [name, src] of [["rpc.ts", RPC_SRC], ["releases.ts", RELEASES_SRC], ["release-panel.tsx", PANEL_SRC]]) {
+    assert.ok(!/createHash|subtle\.digest|crypto\.subtle|sha256\(/.test(code(src)), `${name} đang tự tính checksum`);
+  }
+});
+
+test("rollback từ chối chính bản hiện hành", () => {
+  const body = fnBody("admin_rollback_site");
+  assert.match(body, /v_old\.revision = v_current[\s\S]*?errcode = '22023'/);
+  assert.match(body, /đang là bản hiện hành/);
+});
+
+test("rollback không bao giờ hạ revision, và releases là immutable", () => {
+  // Extension từ chối downgrade: hạ số sẽ làm mọi máy đã nhận bản cao hơn đứng vĩnh viễn.
+  const body = fnBody("admin_rollback_site");
+  assert.match(body, /coalesce\(max\(revision\), 0\) \+ 1/);
+  assert.ok(!/update public\.releases/.test(body), "releases không được sửa, chỉ được insert");
+  assert.match(body, /'rolledBackFrom', v_old\.revision/, "kết quả trả về SỐ revision cũ");
+});
+
+test("admin_list_releases: head là row thô, rolledBackFrom trong danh sách là UUID", () => {
+  // Đây là chỗ hai nghĩa của rolledBackFrom sinh ra; toHistoryRows() quy đổi ở biên.
+  const body = fnBody("admin_list_releases");
+  assert.match(body, /to_jsonb\(h\)/, "head giữ nguyên tên cột của bảng");
+  assert.match(body, /coalesce\(v_head, 'null'::jsonb\)/, "site chưa publish trả JSON null");
+  assert.match(body, /'rolledBackFrom', r\.rolled_back_from/, "trong danh sách là UUID, không phải số");
+  assert.match(body, /order by r\.revision desc/);
+});
+
+test("P0: trang /releases chỉ đọc — không import RPC ghi nào", () => {
+  // Mở trang không bao giờ được tạo ra một release.
+  assert.match(RELEASES_PAGE_SRC, /rpcListReleases/);
+  assert.match(RELEASES_PAGE_SRC, /rpcListGuides/);
+  assert.ok(!/rpcPublishSite|rpcRollbackSite/.test(RELEASES_PAGE_SRC), "page không được cầm RPC ghi");
+  assert.ok(!/"use client"/.test(RELEASES_PAGE_SRC), "page phải là server component");
+});
+
+test("/releases đi qua requireAdmin()", () => {
+  assert.match(RELEASES_PAGE_SRC, /await requireAdmin\(\)/);
+  assert.match(RELEASES_PAGE_SRC, /lib\/auth\/require-admin/);
 });
