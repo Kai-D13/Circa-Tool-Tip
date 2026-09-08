@@ -360,3 +360,47 @@ test("status trả về cả hai site kể cả khi chưa bao giờ đồng bộ
   assert.deepEqual(Object.keys(status).sort(), ["admin", "pos"]);
   assert.equal(status.pos.revision, 0);
 });
+
+/* ========= P0: cùng revision nhưng khác checksum không phải là "không đổi" ======== */
+
+test("P0: cùng revision mà lệch checksum thì phải tải lại, không được báo unchanged", async () => {
+  // Revision nói ĐÂY LÀ BẢN NÀO; checksum nói trong đó có gì. Hai thứ lệch nhau nghĩa là
+  // cache đang giữ thứ không đúng với head — và bỏ qua việc tải chỉ vì con số khớp sẽ
+  // làm điều đó thành vĩnh viễn: mọi lần sync sau đều rơi vào đúng nhánh này.
+  const wrong = payload({ revision: 3, checksum: "sha256:SAI" });
+  const storage = fakeStorage({ [RELEASE_KEY("pos")]: wrong });
+  const api = fakeApi({ heads: [headRow({ revision: 3, checksum: "sha256:aaa" })] });
+
+  const result = await makeSync(storage, api).syncAll();
+
+  const pos = result.sites.find((s) => s.site === "pos");
+  assert.equal(pos.action, "updated", "phải tải lại chứ không phải unchanged");
+  assert.deepEqual(api.calls.release, ["pos"]);
+  assert.equal(storage.dump()[RELEASE_KEY("pos")].checksum, "sha256:aaa", "cache được sửa lại cho đúng");
+  assert.equal(storage.dump()[STATUS_KEY("pos")].state, SYNC_STATE.OK);
+});
+
+test("P0: lệch checksum mà bản tải về cũng hỏng thì giữ bản cũ và báo lỗi", async () => {
+  const wrong = payload({ revision: 3, checksum: "sha256:SAI" });
+  const storage = fakeStorage({ [RELEASE_KEY("pos")]: wrong });
+  const api = fakeApi({
+    heads: [headRow({ revision: 3, checksum: "sha256:aaa" })],
+    // Server trả về thứ vẫn không khớp head — không có gì đáng tin để thay vào.
+    releases: { pos: payload({ revision: 3, checksum: "sha256:VAN_SAI" }) },
+  });
+
+  const result = await makeSync(storage, api).syncAll();
+
+  assert.equal(result.sites.find((s) => s.site === "pos").action, "error");
+  assert.deepEqual(storage.dump()[RELEASE_KEY("pos")], wrong, "không có bản tốt hơn thì đừng vứt bản đang có");
+  assert.match(storage.dump()[STATUS_KEY("pos")].message, /checksum/);
+});
+
+test("khớp cả revision lẫn checksum mới là unchanged", async () => {
+  const storage = fakeStorage({ [RELEASE_KEY("pos")]: payload({ revision: 3, checksum: "sha256:aaa" }) });
+  const api = fakeApi({ heads: [headRow({ revision: 3, checksum: "sha256:aaa" })] });
+
+  const result = await makeSync(storage, api).syncAll();
+  assert.equal(result.sites.find((s) => s.site === "pos").action, "unchanged");
+  assert.equal(api.calls.release.length, 0);
+});

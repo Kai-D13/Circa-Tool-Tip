@@ -125,8 +125,15 @@ export function createSync({ storage, api, schema, sites = SITES, now = () => ne
 
     const cached = await readCache(site);
     const cachedRevision = Number(cached?.revision ?? 0);
+    const cachedChecksum = String(cached?.checksum ?? "");
+    const headChecksum = String(head.checksum ?? "");
 
-    if (cached && cachedRevision === head.revision) {
+    // Both, not just the revision. The revision says WHICH release; the checksum says
+    // what is actually in it. If they disagree the cache is holding something that is
+    // not what the head describes — and skipping the download on the strength of the
+    // number alone would make that permanent, because every later sync would reach this
+    // same branch and report "unchanged" forever.
+    if (cached && cachedRevision === head.revision && cachedChecksum === headChecksum) {
       await writeStatus(site, {
         state: SYNC_STATE.OK,
         revision: cachedRevision,
@@ -143,6 +150,9 @@ export function createSync({ storage, api, schema, sites = SITES, now = () => ne
       return fail(site, `Head revision ${head.revision} thấp hơn bản đang có (${cachedRevision}) — giữ bản cũ.`);
     }
 
+    // Downloaded when there is no cache, when the head moved forward, or when the
+    // revision matches but the content does not. The checks below decide whether what
+    // comes back is allowed to replace what is already there.
     let payload;
     try {
       payload = await api.release(site);
