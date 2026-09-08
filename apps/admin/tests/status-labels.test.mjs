@@ -42,7 +42,9 @@ test("nhãn trạng thái đúng từng chữ stakeholder đã chốt", () => {
     published: "Đã duyệt cho lần phát hành tiếp theo",
     archived: "Đã lưu trữ",
   });
-  assert.equal(RELEASE_HEAD_LABEL, "Đang chạy trên extension");
+  // KHÔNG phải "đang chạy trên extension": release_heads chỉ chứng minh bản nào là hiện
+  // hành trên Supabase, không chứng minh 25 máy POS đã kéo về.
+  assert.equal(RELEASE_HEAD_LABEL, "Bản phát hành hiện hành");
   assert.equal(APPROVE_BUTTON_LABEL, "Duyệt cho lần phát hành tiếp theo");
 });
 
@@ -86,7 +88,7 @@ test("không còn chỗ nào in thẳng giá trị enum tiếng Anh ra chip", ()
 
 /* --------------------------------------------------------------------- chips */
 
-test("xanh lá chỉ dành cho bản đang thật sự chạy trên extension", () => {
+test("xanh lá chỉ dành cho bản phát hành hiện hành", () => {
   // Trước batch này `published` màu xanh trong khi chưa có release nào tồn tại — không
   // guide nào đang chạy ở đâu cả. Đó chính là hiểu nhầm cần xoá.
   assert.equal(releaseHeadChipClass(), "chip chip-success");

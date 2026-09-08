@@ -24,7 +24,7 @@ Không cần build lại extension. Không chạy SQL nào.
 | # | Thao tác | Kỳ vọng | Kết quả |
 |---|---|---|---|
 | 1.1 | Mở `/guides`, nhìn cột **Trạng thái** | Toàn tiếng Việt. **Không** còn chip nào ghi `draft` / `published` / `archived` / `unassigned` | |
-| 1.2 | Nhìn màu chip của một bộ đã duyệt | **Vàng/cam**, không phải xanh lá. Xanh lá từ nay chỉ dành cho bản đang chạy trên extension | |
+| 1.2 | Nhìn màu chip của một bộ đã duyệt | **Vàng/cam**, không phải xanh lá. Xanh lá từ nay chỉ dành cho bản phát hành hiện hành | |
 | 1.3 | Nhìn dãy ô đếm phía trên bảng | `Tổng` · `Chưa phân loại` · `Bản nháp` · `Đã duyệt cho lần phát hành tiếp theo` · `Đã lưu trữ` | |
 | 1.4 | Mở một bộ, nhìn dòng `Trạng thái:` ở khối cuối | Hiện nhãn tiếng Việt, không phải mã enum | |
 | 1.5 | Nhìn ba nút đổi trạng thái | `Chuyển về bản nháp` · `Duyệt cho lần phát hành tiếp theo` · `Lưu trữ` | |
@@ -54,7 +54,7 @@ trạng thái rỗng.
 |---|---|---|---|
 | 3.1 | Nhìn thanh menu trên cùng | Có tab **Phát hành** sau `Phân loại` | |
 | 3.2 | Mở `/releases` | Hai khối riêng: POS và Admin, mỗi khối một thẻ | |
-| 3.3 | Nhìn mỗi khối | `Chưa có bản phát hành · Revision: 0`, và **không** có chip "Đang chạy trên extension" | |
+| 3.3 | Nhìn mỗi khối | `Chưa có bản phát hành · Revision: 0`, và **không** có chip "Bản phát hành hiện hành" | |
 | 3.4 | Nhìn ô đếm `Revision hiện hành` | `0` | |
 | 3.5 | Nhìn mục **Lịch sử phát hành** | `Chưa có bản phát hành.` | |
 | 3.6 | Nhìn nút phát hành khi chưa duyệt bộ nào | **Bị khoá**, cạnh nó ghi lý do "Chưa có bộ nào được duyệt cho lần phát hành tiếp theo." | |
@@ -110,14 +110,24 @@ Ghi ra để khỏi tưởng là bỏ sót:
 - **Publish thật**, và màn hình sau khi publish thành công.
 - **Rollback**: nút, hộp xác nhận, và việc revision mới phải **cao hơn** chứ không phải
   hạ xuống.
-- **Chip "Đang chạy trên extension"** trên bản head.
+- **Chip "Bản phát hành hiện hành"** trên bản head.
 - **Cột "Rollback từ revision N"** trong lịch sử.
 
-Cả bốn đều cần một release tồn tại. Chúng được phủ bằng unit test trong
-`apps/admin/tests/releases.test.mjs` (22 test) và bằng test đối chiếu thẳng với SQL trong
-`apps/admin/tests/rpc-mapping.test.mjs` — gồm: rollback không nhận ghi chú, rollback từ
-chối bản hiện hành, rollback dùng `max(revision)+1`, `releases` không bao giờ bị `update`,
-và checksum chỉ do SQL tính.
+Thêm ba đường nữa cũng chỉ phủ được bằng test, vì phải dựng lỗi mạng đúng lúc:
+
+- **Database đã ghi xong nhưng màn hình không tải lại được.** Portal phải báo *thành
+  công* kèm cảnh báo, khoá thao tác ghi tiếp và cho nút **Tải lại trạng thái**. Báo
+  "phát hành thất bại" ở đây chính là cách Admin bấm lại và tạo ra hai revision cho cùng
+  một ý định.
+- **Không rõ lệnh đã tới database hay chưa** (lỗi transport, không có SQLSTATE). Portal
+  hiện "Chưa xác định trạng thái phát hành", khoá ghi tiếp, bắt đối soát.
+- **Database từ chối** (`22023`, `42501`, `P0002`). Hiện nguyên văn và **thử lại được
+  ngay** — không có gì để đối soát vì không có gì được ghi.
+
+Tất cả nằm trong `apps/admin/tests/releases.test.mjs` (31 test), cùng với test đối chiếu
+thẳng với SQL trong `apps/admin/tests/rpc-mapping.test.mjs`: rollback không nhận ghi chú,
+rollback từ chối bản hiện hành, rollback dùng `max(revision)+1`, `releases` không bao giờ
+bị `update`, và checksum chỉ do SQL tính.
 
 QA bằng tay cho các đường này thuộc Batch 3, khi extension đã đồng bộ được release và có
 thể xác nhận đầu cuối.

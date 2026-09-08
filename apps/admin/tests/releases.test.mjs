@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   EMPTY_RELEASE_TEXT,
@@ -7,6 +10,7 @@ import {
   countByStatus,
   currentRevision,
   headText,
+  isDatabaseVerdict,
   isUnreleased,
   newFlight,
   nextRevision,
@@ -14,6 +18,7 @@ import {
   revisionText,
   rollbackGate,
   runPublish,
+  runReload,
   runRollback,
   shortChecksum,
   siteStateFrom,
@@ -149,7 +154,7 @@ test("đủ điều kiện thì publish đi qua và ghi chú được trim", asy
   const deps = fakeDeps();
   const outcome = await runPublish(newFlight(), { site: "pos", note: "  sửa selector  ", approvedCount: 13 }, deps);
 
-  assert.equal(outcome.status, "ok");
+  assert.equal(outcome.status, "committed");
   assert.deepEqual(deps.calls.publish, [{ site: "pos", note: "  sửa selector  " }]);
   assert.deepEqual(deps.calls.reload, ["pos"], "thành công phải nạp lại head + lịch sử");
 });
@@ -184,7 +189,7 @@ test("bấm phát hành hai lần liên tiếp chỉ gọi RPC một lần", asy
   // Và nhả rồi thì lần sau đi được — guard không được kẹt vĩnh viễn.
   resolvePublish = null;
   const third = await runPublish(flight, { site: "pos", note: "n", approvedCount: 13 }, fakeDeps());
-  assert.equal(third.status, "ok");
+  assert.equal(third.status, "committed");
 });
 
 test("guard nhả cả khi RPC ném lỗi", async () => {
@@ -195,8 +200,8 @@ test("guard nhả cả khi RPC ném lỗi", async () => {
     },
   });
   const outcome = await runPublish(flight, { site: "pos", note: "n", approvedCount: 1 }, deps);
-  assert.equal(outcome.status, "error");
-  assert.equal(flight.busy, false, "finally phải chạy");
+  assert.equal(outcome.status, "unknown", "Error trần không mang SQLSTATE nên không kết luận được");
+  assert.equal(flight.busy, false, "finally phải chạy dù đi ra bằng đường nào");
 });
 
 /* --------------------------------------------------- thất bại và độc lập site */
@@ -210,8 +215,10 @@ test("thất bại giữ nguyên head và lịch sử đang hiển thị", async
   });
 
   const outcome = await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 13 }, deps);
+  assert.equal(outcome.status, "rejected", "database đã trả lời — không phải trạng thái mập mờ");
   const after = applyOutcome(before, outcome);
 
+  assert.equal(after.needsReload, null, "database từ chối thì không có gì để đối soát, thử lại được ngay");
   assert.deepEqual(after.head, before.head, "head không được biến mất khi publish hỏng");
   assert.deepEqual(after.history, before.history);
   assert.deepEqual(after.approved, before.approved);
@@ -234,7 +241,8 @@ test("POS lỗi không đụng gì tới state của Admin", async () => {
   const outcome = await runPublish(posFlight, { site: "pos", note: "n", approvedCount: 13 }, deps);
   const next = { ...board, pos: applyOutcome(board.pos, outcome) };
 
-  assert.equal(next.pos.error, "POS hỏng");
+  assert.equal(outcome.status, "unknown", "Error trần không có SQLSTATE — không biết DB đã ghi chưa");
+  assert.equal(next.pos.needsReload.message, "POS hỏng");
   assert.equal(next.admin, board.admin, "state Admin phải là ĐÚNG object cũ, không bị dựng lại");
   assert.equal(adminFlight.busy, false, "flight của Admin không được đụng tới");
   assert.deepEqual(next.pos.head, board.pos.head);
@@ -285,6 +293,7 @@ test("rollback thành công cho ra revision MỚI cao hơn, không bao giờ h�
   const old = before.history.find((r) => r.revision === 3);
 
   const outcome = await runRollback(newFlight(), { site: "pos", row: old, head: before.head }, deps);
+  assert.equal(outcome.status, "committed");
   const after = applyOutcome(before, outcome);
 
   assert.equal(currentRevision(after.head), 8);
@@ -406,4 +415,175 @@ test("dựng toàn bộ state của trang không gọi bất kỳ RPC ghi nào",
     for (const row of state.history) assert.doesNotThrow(() => rollbackGate(row, state.head, false));
   }
   assert.equal(typeof deps.publish, "function", "deps chưa từng được gọi");
+});
+
+/* ================== P0: commit thành công vs màn hình không tải lại được ========= */
+
+test("P0: publish thành công nhưng reload hỏng KHÔNG được báo là thất bại", async () => {
+  // Đây là đường sinh ra release trùng: DB đã tạo revision, Portal báo hỏng, Admin bấm
+  // lại, và site có hai bản phát hành cho cùng một ý định.
+  const before = siteStateFrom("pos", list(), [guide()]);
+  const deps = fakeDeps({});
+  deps.reload = async () => {
+    throw new Error("Failed to fetch");
+  };
+
+  const outcome = await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 13 }, deps);
+  assert.equal(outcome.status, "committed-refresh-failed");
+  assert.equal(outcome.result.revision, 8, "kết quả server phải được giữ lại");
+
+  const after = applyOutcome(before, outcome);
+  assert.equal(after.error, null, "không được hiện như một lần phát hành thất bại");
+  assert.equal(after.lastResult.revision, 8, "Admin phải thấy revision đã được tạo");
+  assert.equal(after.needsReload.kind, "committed-refresh-failed");
+  assert.deepEqual(after.head, before.head, "head cũ giữ nguyên — ta chưa đọc được head mới");
+});
+
+test("P0: rollback thành công nhưng reload hỏng cũng vậy", async () => {
+  const before = siteStateFrom("pos", list({ releases: [release(), release({ id: "rel-3", revision: 3 })] }), []);
+  const deps = fakeDeps({});
+  deps.reload = async () => {
+    throw new Error("mất mạng");
+  };
+  const old = before.history.find((r) => r.revision === 3);
+
+  const outcome = await runRollback(newFlight(), { site: "pos", row: old, head: before.head }, deps);
+  assert.equal(outcome.status, "committed-refresh-failed");
+
+  const after = applyOutcome(before, outcome);
+  assert.equal(after.error, null);
+  assert.equal(after.lastResult.revision, 8);
+  assert.equal(after.lastResult.rolledBackFrom, 3);
+});
+
+test("P0: sau khi commit mà chưa đối soát được, không được ghi tiếp", async () => {
+  const before = siteStateFrom("pos", list(), [guide()]);
+  const deps = fakeDeps({});
+  deps.reload = async () => {
+    throw new Error("Failed to fetch");
+  };
+  const stuck = applyOutcome(before, await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 13 }, deps));
+
+  const fresh = fakeDeps();
+  const again = await runPublish(
+    newFlight(),
+    { site: "pos", note: "n", approvedCount: 13, needsReload: !!stuck.needsReload },
+    fresh,
+  );
+  assert.equal(again.status, "blocked");
+  assert.match(again.reason, /tải lại trạng thái/i);
+  assert.equal(fresh.calls.publish.length, 0, "không được gọi publish lần hai");
+
+  const rollbackAgain = await runRollback(
+    newFlight(),
+    { site: "pos", row: stuck.history[0], head: stuck.head, needsReload: true },
+    fresh,
+  );
+  assert.equal(rollbackAgain.status, "blocked");
+  assert.equal(fresh.calls.rollback.length, 0);
+});
+
+test("P0: tải lại trạng thái là đường thoát, và nó gỡ khoá", async () => {
+  const before = siteStateFrom("pos", list(), [guide()]);
+  const failing = fakeDeps({});
+  failing.reload = async () => {
+    throw new Error("Failed to fetch");
+  };
+  const stuck = applyOutcome(
+    before,
+    await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 13 }, failing),
+  );
+  assert.ok(stuck.needsReload);
+
+  const after8 = {
+    ok: true,
+    site: "pos",
+    head: head({ release_id: "rel-8", revision: 8 }),
+    releases: [release({ id: "rel-8", revision: 8 }), release()],
+  };
+  const recovered = applyOutcome(stuck, await runReload(newFlight(), "pos", fakeDeps({ reloadResult: after8 })));
+
+  assert.equal(recovered.needsReload, null, "đối soát xong thì mở khoá");
+  assert.equal(currentRevision(recovered.head), 8, "và head mới hiện ra");
+  assert.equal(recovered.lastResult.revision, 8, "kết quả lần publish vẫn còn để đối chiếu");
+});
+
+test("P0: tải lại thất bại thì vẫn kẹt, và vẫn không phải lỗi phát hành", async () => {
+  const before = siteStateFrom("pos", list(), [guide()]);
+  const failing = fakeDeps({});
+  failing.reload = async () => {
+    throw new Error("Failed to fetch");
+  };
+  const stuck = applyOutcome(
+    before,
+    await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 13 }, failing),
+  );
+  const still = applyOutcome(stuck, await runReload(newFlight(), "pos", failing));
+
+  assert.equal(still.needsReload.kind, "committed-refresh-failed", "vẫn nhớ là DB ĐÃ ghi");
+  assert.equal(still.error, null);
+});
+
+/* -------------------------------- database từ chối vs không biết gì cả */
+
+test("SQLSTATE nghĩa là database đã trả lời, và đã từ chối", () => {
+  assert.equal(isDatabaseVerdict(new RpcError("admin_publish_site", "Không có guide nào", "22023")), true);
+  assert.equal(isDatabaseVerdict({ code: "42501", message: "Admin permission required" }), true);
+  assert.equal(isDatabaseVerdict({ code: "P0002" }), true);
+});
+
+test("không có SQLSTATE nghĩa là không biết lệnh đã tới database hay chưa", () => {
+  // Đoán "nó hỏng" chính là cái đoán tạo ra release trùng.
+  assert.equal(isDatabaseVerdict(new Error("Failed to fetch")), false);
+  assert.equal(isDatabaseVerdict({ code: "" }), false);
+  assert.equal(isDatabaseVerdict({ code: "   " }), false);
+  assert.equal(isDatabaseVerdict(null), false);
+  assert.equal(isDatabaseVerdict("mạng chết"), false);
+});
+
+test("lỗi transport cho trạng thái unknown và khoá thao tác ghi", async () => {
+  const before = siteStateFrom("pos", list(), [guide()]);
+  const deps = fakeDeps({
+    publish: async () => {
+      throw new Error("Failed to fetch");
+    },
+  });
+  const outcome = await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 13 }, deps);
+  assert.equal(outcome.status, "unknown");
+
+  const after = applyOutcome(before, outcome);
+  assert.equal(after.error, null, "chưa biết là hỏng thì không được nói là hỏng");
+  assert.equal(after.needsReload.kind, "unknown");
+  assert.equal(after.lastResult, null, "và không được vờ như đã có kết quả");
+  assert.equal(publishGate({ approvedCount: 13, note: "n", busy: false, needsReload: true }).ok, false);
+});
+
+test("lỗi SQL rõ ràng thì vẫn thử lại được ngay, không bắt đối soát", async () => {
+  const before = siteStateFrom("pos", list(), [guide()]);
+  const deps = fakeDeps({
+    publish: async () => {
+      throw new RpcError("admin_publish_site", "Không publish được site pos — Bước 3 thiếu selector", "22023");
+    },
+  });
+  const after = applyOutcome(
+    before,
+    await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 13 }, deps),
+  );
+
+  assert.match(after.error, /Bước 3 thiếu selector/);
+  assert.equal(after.needsReload, null);
+  assert.equal(publishGate({ approvedCount: 13, note: "n", busy: false, needsReload: false }).ok, true);
+});
+
+/* ------------------------------------------------------ P2: nói đúng về concurrency */
+
+test("không chỗ nào khẳng định tab thứ hai sẽ nhận 23505", () => {
+  // pg_advisory_xact_lock là transaction-scoped: request thứ hai CHỜ request đầu commit,
+  // rồi đọc max(revision) mới và mint số kế tiếp. Kết quả là hai release liên tiếp, không
+  // có unique violation nào. Comment cũ hứa một contract database không hề có.
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  for (const f of ["../lib/guides/releases.ts", "../components/release-panel.tsx"]) {
+    const src = readFileSync(resolve(HERE, f), "utf8");
+    assert.ok(!src.includes("23505"), `${f} vẫn khẳng định sai về unique violation`);
+  }
 });

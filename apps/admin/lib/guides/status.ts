@@ -24,8 +24,16 @@ export const GUIDE_STATUS_LABEL: Record<GuideStatus, string> = {
   archived: "Đã lưu trữ",
 };
 
-/** The release head, not a guide status. The only state that is genuinely live. */
-export const RELEASE_HEAD_LABEL = "Đang chạy trên extension";
+/**
+ * The release head, not a guide status.
+ *
+ * Worded as "hiện hành", not "đang chạy trên extension": `release_heads` proves what
+ * Supabase considers current, and nothing more. Whether all ~25 POS machines have
+ * actually pulled it is a different fact, and this project deliberately does not track
+ * devices. Batch 3 can show the revision an individual browser holds, in the Tool-tip
+ * menu on that machine — that is the only place the claim would be true.
+ */
+export const RELEASE_HEAD_LABEL = "Bản phát hành hiện hành";
 
 export const APPROVE_BUTTON_LABEL = "Duyệt cho lần phát hành tiếp theo";
 export const TO_DRAFT_BUTTON_LABEL = "Chuyển về bản nháp";

@@ -14,6 +14,7 @@ import {
   revisionText,
   rollbackGate,
   runPublish,
+  runReload,
   runRollback,
   shortChecksum,
   type HistoryRow,
@@ -57,7 +58,8 @@ export function ReleasePanel({ site, initial }: { site: SiteOption; initial: Sit
   const flight = useRef(newFlight());
 
   const busy = phase === "working";
-  const gate = publishGate({ approvedCount: state.approved.length, note, busy });
+  const stuck = state.needsReload;
+  const gate = publishGate({ approvedCount: state.approved.length, note, busy, needsReload: !!stuck });
   const live = !isUnreleased(state.head);
   const expected = nextRevision(state);
 
@@ -65,22 +67,33 @@ export function ReleasePanel({ site, initial }: { site: SiteOption; initial: Sit
     setPhase("working");
     const outcome = await runPublish(
       flight.current,
-      { site: site.code, note, approvedCount: state.approved.length },
+      { site: site.code, note, approvedCount: state.approved.length, needsReload: !!stuck },
       deps,
     );
     setState((s) => applyOutcome(s, outcome));
     setPhase("idle");
-    if (outcome.status === "ok") setNote("");
+    if (outcome.status === "committed") setNote("");
     // No router.refresh(): the panel just reloaded its own releases, and a refresh would
     // re-run every read on the page while this component's state — seeded from props —
     // quietly ignored the new ones. Publishing changes no guide row, so nothing else on
     // the page is stale.
   }
 
+  async function reload() {
+    setPhase("working");
+    const outcome = await runReload(flight.current, site.code, deps);
+    setState((s) => applyOutcome(s, outcome));
+    setPhase("idle");
+  }
+
   async function rollback() {
     if (!target) return;
     setPhase("working");
-    const outcome = await runRollback(flight.current, { site: site.code, row: target, head: state.head }, deps);
+    const outcome = await runRollback(
+      flight.current,
+      { site: site.code, row: target, head: state.head, needsReload: !!stuck },
+      deps,
+    );
     setState((s) => applyOutcome(s, outcome));
     setPhase("idle");
     setTarget(null);
@@ -135,6 +148,33 @@ export function ReleasePanel({ site, initial }: { site: SiteOption; initial: Sit
       {state.error ? (
         <div className="alert alert-danger" role="alert">
           {state.error}
+        </div>
+      ) : null}
+
+      {/* Không phải lỗi phát hành. Hoặc release ĐÃ tồn tại mà màn hình chưa tải lại được,
+          hoặc không rõ lệnh đã tới database hay chưa. Cả hai đều khoá thao tác ghi tiếp:
+          bấm lại lúc này là cách tạo ra hai revision cho cùng một ý định. */}
+      {stuck ? (
+        <div className="alert alert-warning" role="alert">
+          {stuck.kind === "committed-refresh-failed" ? (
+            <>
+              <strong>Đã phát hành xong,</strong> nhưng không tải lại được màn hình. Bản phát hành đã tồn tại trong
+              database — <strong>đừng bấm lại</strong>.
+            </>
+          ) : (
+            <>
+              <strong>Chưa xác định trạng thái phát hành.</strong> Không rõ lệnh đã tới database hay chưa. Tải lại
+              trạng thái để đối soát trước khi làm gì tiếp.
+            </>
+          )}
+          <div className="mono" style={{ marginTop: 6 }}>
+            {stuck.message}
+          </div>
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn btn-sm" type="button" disabled={busy} onClick={reload}>
+              Tải lại trạng thái
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -292,7 +332,7 @@ export function ReleasePanel({ site, initial }: { site: SiteOption; initial: Sit
             </thead>
             <tbody>
               {state.history.map((r) => {
-                const canRoll = rollbackGate(r, state.head, busy);
+                const canRoll = rollbackGate(r, state.head, busy, !!stuck);
                 return (
                   <tr key={r.id}>
                     <td>

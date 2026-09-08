@@ -61,10 +61,22 @@ export interface SiteReleaseState {
   approved: ApprovedGuide[];
   draftCount: number;
   approvedStepTotal: number;
-  /** Raw message from the last failed RPC, or null. */
+  /** Raw message from a write the database REFUSED, or null. */
   error: string | null;
-  /** The last successful publish/rollback, for showing the server's real numbers. */
+  /** The last publish/rollback the database accepted. */
   lastResult: PublishResult | RollbackResult | null;
+  /**
+   * Set when a write ended somewhere the screen cannot reason about on its own: either
+   * the database committed but the refresh failed, or we never heard back at all. While
+   * this is set, further writes are refused — see the gates.
+   */
+  needsReload: NeedsReload | null;
+}
+
+export interface NeedsReload {
+  /** committed: the release EXISTS. unknown: it may or may not. */
+  kind: "committed-refresh-failed" | "unknown";
+  message: string;
 }
 
 export const EMPTY_RELEASE_TEXT = "Chưa có bản phát hành";
@@ -134,6 +146,7 @@ export function siteStateFrom(site: string, releases: ListReleasesResult, guides
     approvedStepTotal: approved.reduce((sum, g) => sum + g.stepCount, 0),
     error: null,
     lastResult: null,
+    needsReload: null,
   };
 }
 
@@ -188,8 +201,18 @@ export interface Gate {
   reason: string;
 }
 
-export function publishGate(input: { approvedCount: number; note: string; busy: boolean }): Gate {
+export function publishGate(input: {
+  approvedCount: number;
+  note: string;
+  busy: boolean;
+  needsReload?: boolean;
+}): Gate {
   if (input.busy) return { ok: false, reason: "Đang phát hành…" };
+  // A second publish on top of an unresolved one is how a site ends up with two releases
+  // for one intention. Make the operator look at the real state first.
+  if (input.needsReload) {
+    return { ok: false, reason: "Chưa rõ trạng thái lần trước — tải lại trạng thái đã." };
+  }
   if (input.approvedCount <= 0) {
     return { ok: false, reason: "Chưa có bộ nào được duyệt cho lần phát hành tiếp theo." };
   }
@@ -198,8 +221,14 @@ export function publishGate(input: { approvedCount: number; note: string; busy: 
   return { ok: true, reason: "" };
 }
 
-export function rollbackGate(row: HistoryRow, head: ReleaseHeadRow | null, busy: boolean): Gate {
+export function rollbackGate(
+  row: HistoryRow,
+  head: ReleaseHeadRow | null,
+  busy: boolean,
+  needsReload = false,
+): Gate {
   if (busy) return { ok: false, reason: "Đang xử lý…" };
+  if (needsReload) return { ok: false, reason: "Chưa rõ trạng thái lần trước — tải lại trạng thái đã." };
   if (isUnreleased(head)) return { ok: false, reason: "Site này chưa có bản phát hành nào." };
   if (row.isHead) return { ok: false, reason: "Đây đang là bản hiện hành — không cần rollback." };
   return { ok: true, reason: "" };
@@ -215,9 +244,12 @@ export function rollbackGate(row: HistoryRow, head: ReleaseHeadRow | null, busy:
  * read within one tick, which is why the component holds this in a `useRef` rather than
  * `useState`.
  *
- * This covers one operator double-clicking. Two browser tabs still send two requests —
- * the per-site advisory lock serialises them and `unique (site_code, revision)` rejects
- * the loser with 23505. Do not "fix" that here with a lock table.
+ * Scope: one operator double-clicking inside ONE panel. Two browser tabs still send two
+ * requests, and they do NOT collide — `pg_advisory_xact_lock` is transaction-scoped, so
+ * the second waits for the first to commit, then reads the new `max(revision)` and mints
+ * the one after it. The result is two consecutive releases, no error. That is the
+ * database working as designed; deciding whether it is what the operator meant is a
+ * human question, not one to "fix" here with a lock table.
  */
 export interface Flight {
   busy: boolean;
@@ -235,54 +267,114 @@ export interface ReleaseDeps {
   reload: (site: string) => Promise<ListReleasesResult>;
 }
 
+/**
+ * What happened to a write, told precisely enough to act on.
+ *
+ * The distinction that matters — and that a single try/catch destroyed — is between "the
+ * database refused" and "the database committed but the screen could not refresh". Both
+ * used to surface as an error, so the operator was told the publish failed while a
+ * release existed, pressed the button again, and got a second revision for one intention.
+ */
 export type Outcome =
   | { status: "blocked"; reason: string }
   | { status: "busy" }
-  | { status: "error"; message: string }
-  | { status: "ok"; result: PublishResult | RollbackResult; releases: ListReleasesResult };
+  /** The database answered, and the answer was no. Nothing was written; retrying is safe. */
+  | { status: "rejected"; message: string }
+  /** Written AND the screen is up to date. */
+  | { status: "committed"; result: PublishResult | RollbackResult; releases: ListReleasesResult }
+  /** Written — the release EXISTS — but reloading the screen failed. Never an error. */
+  | { status: "committed-refresh-failed"; result: PublishResult | RollbackResult; message: string }
+  /** We never heard back. The write may or may not have landed. */
+  | { status: "unknown"; message: string }
+  | { status: "refreshed"; releases: ListReleasesResult }
+  | { status: "refresh-failed"; message: string };
 
 function messageOf(err: unknown): string {
   // Verbatim. The Postgres text is the only thing that says WHICH guide blocked a publish.
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function runPublish(
+/**
+ * Did the database actually answer?
+ *
+ * A SQLSTATE (22023, 42501, P0002, 40001 …) means Postgres evaluated the call and
+ * refused it, so nothing was written. No code means the failure happened somewhere in
+ * the transport, and from here it is genuinely unknowable whether the transaction
+ * committed. Guessing "it failed" is the guess that creates duplicate releases.
+ *
+ * Duck-typed on `.code` rather than on `instanceof RpcError`, so this module stays free
+ * of the Supabase layer and a test can construct either case with a plain object.
+ */
+export function isDatabaseVerdict(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === "string" && code.trim() !== "";
+}
+
+async function runWrite(
   flight: Flight,
-  input: { site: string; note: string; approvedCount: number },
+  gate: Gate,
+  site: string,
+  call: () => Promise<PublishResult | RollbackResult>,
   deps: ReleaseDeps,
 ): Promise<Outcome> {
-  const gate = publishGate({ approvedCount: input.approvedCount, note: input.note, busy: false });
   if (!gate.ok) return { status: "blocked", reason: gate.reason };
   if (flight.busy) return { status: "busy" };
 
   flight.busy = true;
   try {
-    const result = await deps.publish(input.site, input.note);
-    const releases = await deps.reload(input.site);
-    return { status: "ok", result, releases };
-  } catch (err) {
-    return { status: "error", message: messageOf(err) };
+    let result: PublishResult | RollbackResult;
+    try {
+      result = await call();
+    } catch (err) {
+      return isDatabaseVerdict(err)
+        ? { status: "rejected", message: messageOf(err) }
+        : { status: "unknown", message: messageOf(err) };
+    }
+
+    // From here on the write HAS committed. A failure below is a display problem, and
+    // reporting it as a failed publish is what makes the operator publish twice.
+    try {
+      return { status: "committed", result, releases: await deps.reload(site) };
+    } catch (err) {
+      return { status: "committed-refresh-failed", result, message: messageOf(err) };
+    }
   } finally {
     flight.busy = false;
   }
 }
 
-export async function runRollback(
+export async function runPublish(
   flight: Flight,
-  input: { site: string; row: HistoryRow; head: ReleaseHeadRow | null },
+  input: { site: string; note: string; approvedCount: number; needsReload?: boolean },
   deps: ReleaseDeps,
 ): Promise<Outcome> {
-  const gate = rollbackGate(input.row, input.head, false);
-  if (!gate.ok) return { status: "blocked", reason: gate.reason };
-  if (flight.busy) return { status: "busy" };
+  const gate = publishGate({
+    approvedCount: input.approvedCount,
+    note: input.note,
+    busy: false,
+    needsReload: input.needsReload,
+  });
+  return runWrite(flight, gate, input.site, () => deps.publish(input.site, input.note), deps);
+}
 
+export async function runRollback(
+  flight: Flight,
+  input: { site: string; row: HistoryRow; head: ReleaseHeadRow | null; needsReload?: boolean },
+  deps: ReleaseDeps,
+): Promise<Outcome> {
+  const gate = rollbackGate(input.row, input.head, false, input.needsReload);
+  return runWrite(flight, gate, input.site, () => deps.rollback(input.site, input.row.id), deps);
+}
+
+/** Re-read head and history. The way out of both unresolved states. */
+export async function runReload(flight: Flight, site: string, deps: ReleaseDeps): Promise<Outcome> {
+  if (flight.busy) return { status: "busy" };
   flight.busy = true;
   try {
-    const result = await deps.rollback(input.site, input.row.id);
-    const releases = await deps.reload(input.site);
-    return { status: "ok", result, releases };
+    return { status: "refreshed", releases: await deps.reload(site) };
   } catch (err) {
-    return { status: "error", message: messageOf(err) };
+    return { status: "refresh-failed", message: messageOf(err) };
   } finally {
     flight.busy = false;
   }
@@ -291,9 +383,13 @@ export async function runRollback(
 /**
  * Fold an outcome into the site's state.
  *
- * A failure keeps `head` and `history` untouched: the screen still shows what is really
- * live, with the error next to it. Replacing them with nothing on failure would tell the
+ * A refused write keeps `head` and `history` untouched: the screen still shows what is
+ * really live, with the error next to it. Replacing them with nothing would tell the
  * operator the site had lost its release.
+ *
+ * A committed-but-unrefreshed write is NOT an error. The release exists; only the screen
+ * is stale. It records the server's own result so the operator can see the revision that
+ * was created, and sets `needsReload` so no second write can be started on top of it.
  *
  * `busy` returns the SAME object so a test can assert by reference that nothing moved.
  * Guides are not refetched — publishing does not change any guide row.
@@ -304,15 +400,44 @@ export function applyOutcome(state: SiteReleaseState, outcome: Outcome): SiteRel
       return state;
     case "blocked":
       return { ...state, error: outcome.reason };
-    case "error":
-      return { ...state, error: outcome.message };
-    case "ok":
+    case "rejected":
+      // The database refused; nothing was written, so the operator may safely try again.
+      return { ...state, error: outcome.message, needsReload: null };
+    case "unknown":
+      return {
+        ...state,
+        error: null,
+        needsReload: { kind: "unknown", message: outcome.message },
+      };
+    case "committed-refresh-failed":
+      return {
+        ...state,
+        error: null,
+        lastResult: outcome.result,
+        needsReload: { kind: "committed-refresh-failed", message: outcome.message },
+      };
+    case "committed":
       return {
         ...state,
         head: outcome.releases.head ?? null,
         history: toHistoryRows(outcome.releases),
         error: null,
         lastResult: outcome.result,
+        needsReload: null,
+      };
+    case "refreshed":
+      return {
+        ...state,
+        head: outcome.releases.head ?? null,
+        history: toHistoryRows(outcome.releases),
+        error: null,
+        needsReload: null,
+      };
+    case "refresh-failed":
+      // Still stuck, and still not an error about the write itself.
+      return {
+        ...state,
+        needsReload: { kind: state.needsReload?.kind ?? "unknown", message: outcome.message },
       };
   }
 }
