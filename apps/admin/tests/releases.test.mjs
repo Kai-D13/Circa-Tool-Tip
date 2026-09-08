@@ -21,6 +21,7 @@ import {
   runReload,
   runRollback,
   shortChecksum,
+  shouldClearNote,
   siteStateFrom,
   toHistoryRows,
 } from "../lib/guides/releases.ts";
@@ -586,4 +587,133 @@ test("không chỗ nào khẳng định tab thứ hai sẽ nhận 23505", () => 
     const src = readFileSync(resolve(HERE, f), "utf8");
     assert.ok(!src.includes("23505"), `${f} vẫn khẳng định sai về unique violation`);
   }
+});
+
+/* ============== P1: banner thành công cũ không được sống sót qua lần sau ========= */
+
+/** State của một site vừa publish xong revision 1. */
+async function afterSuccessfulPublish() {
+  const before = siteStateFrom("pos", EMPTY_LIST, [guide()]);
+  const deps = fakeDeps({
+    publishResult: { ok: true, site: "pos", releaseId: "rel-1", revision: 1, checksum: "sha256:ccc", guides: 1, steps: 9 },
+    reloadResult: {
+      ok: true,
+      site: "pos",
+      head: head({ release_id: "rel-1", revision: 1 }),
+      releases: [release({ id: "rel-1", revision: 1 })],
+    },
+  });
+  const state = applyOutcome(before, await runPublish(newFlight(), { site: "pos", note: "lần đầu", approvedCount: 1 }, deps));
+  assert.equal(state.lastResult.revision, 1, "bối cảnh: đã có banner xanh revision 1");
+  return state;
+}
+
+test("P1: database từ chối thì banner thành công cũ phải biến mất", async () => {
+  // Một banner xanh "đã phát hành revision 1" đứng cạnh một alert đỏ sẽ bị đọc thành kết
+  // quả của chính lần vừa thất bại.
+  const state = await afterSuccessfulPublish();
+  const deps = fakeDeps({
+    publish: async () => {
+      throw new RpcError("admin_publish_site", "Không có guide nào ở trạng thái published cho site pos", "22023");
+    },
+  });
+
+  const after = applyOutcome(state, await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 1 }, deps));
+  assert.equal(after.lastResult, null, "kết quả cũ không được sống sót");
+  assert.match(after.error, /Không có guide nào/);
+});
+
+test("P1: trạng thái không xác định cũng phải xoá banner thành công cũ", async () => {
+  const state = await afterSuccessfulPublish();
+  const deps = fakeDeps({
+    publish: async () => {
+      throw new Error("Failed to fetch");
+    },
+  });
+
+  const after = applyOutcome(state, await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 1 }, deps));
+  assert.equal(after.lastResult, null, "không được vừa cảnh báo mập mờ vừa khoe thành công cũ");
+  assert.equal(after.needsReload.kind, "unknown");
+  assert.equal(after.error, null);
+});
+
+test("P1: rollback lỗi cũng xoá banner thành công cũ", async () => {
+  const state = await afterSuccessfulPublish();
+  const deps = fakeDeps({
+    rollback: async () => {
+      throw new RpcError("admin_rollback_site", "Không tìm thấy release", "P0002");
+    },
+  });
+  const row = { ...state.history[0], isHead: false };
+
+  const after = applyOutcome(state, await runRollback(newFlight(), { site: "pos", row, head: state.head }, deps));
+  assert.equal(after.lastResult, null);
+});
+
+test("P1: commit xong mà reload hỏng thì kết quả MỚI phải được giữ", async () => {
+  const state = await afterSuccessfulPublish();
+  const deps = fakeDeps({
+    publishResult: { ok: true, site: "pos", releaseId: "rel-2", revision: 2, checksum: "sha256:ddd", guides: 1, steps: 9 },
+  });
+  deps.reload = async () => {
+    throw new Error("Failed to fetch");
+  };
+
+  const after = applyOutcome(state, await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 1 }, deps));
+  assert.equal(after.lastResult.revision, 2, "phải là revision vừa tạo, không phải revision cũ");
+  assert.equal(after.needsReload.kind, "committed-refresh-failed");
+});
+
+test("P1: tải lại trạng thái vẫn giữ kết quả mới để đối chiếu", async () => {
+  const state = await afterSuccessfulPublish();
+  const failing = fakeDeps({
+    publishResult: { ok: true, site: "pos", releaseId: "rel-2", revision: 2, checksum: "sha256:ddd", guides: 1, steps: 9 },
+  });
+  failing.reload = async () => {
+    throw new Error("Failed to fetch");
+  };
+  const stuck = applyOutcome(state, await runPublish(newFlight(), { site: "pos", note: "n", approvedCount: 1 }, failing));
+
+  const after2 = {
+    ok: true,
+    site: "pos",
+    head: head({ release_id: "rel-2", revision: 2 }),
+    releases: [release({ id: "rel-2", revision: 2 }), release({ id: "rel-1", revision: 1 })],
+  };
+  const recovered = applyOutcome(stuck, await runReload(newFlight(), "pos", fakeDeps({ reloadResult: after2 })));
+
+  assert.equal(recovered.lastResult.revision, 2, "Admin phải đối chiếu được revision vừa tạo với head vừa đọc");
+  assert.equal(currentRevision(recovered.head), 2);
+  assert.equal(recovered.needsReload, null);
+});
+
+/* ------------------------------------------------- P1: ghi chú và lần publish sau */
+
+test("P1: ghi chú được xoá mỗi khi database đã tạo release", () => {
+  // Kể cả khi màn hình không tải lại được: release ĐÃ tồn tại. Để nguyên ghi chú thì sau
+  // khi "Tải lại trạng thái" thành công, nút phát hành lập tức đủ điều kiện trở lại với
+  // ghi chú của một bản đã phát hành rồi.
+  const result = { ok: true, site: "pos", releaseId: "r", revision: 1, checksum: "x", guides: 1, steps: 1 };
+  assert.equal(shouldClearNote({ status: "committed", result, releases: EMPTY_LIST }), true);
+  assert.equal(shouldClearNote({ status: "committed-refresh-failed", result, message: "Failed to fetch" }), true);
+});
+
+test("P1: ghi chú được giữ khi chưa chắc database đã ghi", () => {
+  assert.equal(shouldClearNote({ status: "unknown", message: "Failed to fetch" }), false);
+  assert.equal(shouldClearNote({ status: "rejected", message: "22023" }), false);
+  assert.equal(shouldClearNote({ status: "blocked", reason: "x" }), false);
+  assert.equal(shouldClearNote({ status: "busy" }), false);
+});
+
+/* ------------------------------------- P1: Portal không nói thay cho extension */
+
+test("P1: không chỗ nào trên Portal nói một bản đang chạy trên extension", () => {
+  // release_heads chỉ chứng minh revision hiện hành TRÊN SUPABASE. Máy POS nào đã kéo về
+  // là chuyện khác, và dự án cố ý không theo dõi device.
+  const HERE2 = dirname(fileURLToPath(import.meta.url));
+  const panel = readFileSync(resolve(HERE2, "../components/release-panel.tsx"), "utf8");
+  for (const phrase of ["đang chạy", "trên extension"]) {
+    assert.ok(!panel.includes(phrase), `release-panel.tsx còn nói "${phrase}"`);
+  }
+  assert.ok(panel.includes("bản phát hành hiện hành"), "phải dùng cách nói đúng");
 });

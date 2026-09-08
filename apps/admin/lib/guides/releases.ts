@@ -50,7 +50,7 @@ export interface HistoryRow {
   note: string | null;
   releasedAt: string;
   releasedByEmail: string | null;
-  /** This is the release the extension is actually running. */
+  /** The revision `release_heads` points at — the current one on Supabase. */
   isHead: boolean;
 }
 
@@ -367,6 +367,18 @@ export async function runRollback(
   return runWrite(flight, gate, input.site, () => deps.rollback(input.site, input.row.id), deps);
 }
 
+/**
+ * Should the release note be cleared after this outcome?
+ *
+ * True whenever the database created a release — including the case where the screen
+ * then failed to refresh. Keeping the note there would mean that after a successful
+ * "Tải lại trạng thái" the publish button is armed again, pre-filled with the note for a
+ * release that already exists.
+ */
+export function shouldClearNote(outcome: Outcome): boolean {
+  return outcome.status === "committed" || outcome.status === "committed-refresh-failed";
+}
+
 /** Re-read head and history. The way out of both unresolved states. */
 export async function runReload(flight: Flight, site: string, deps: ReleaseDeps): Promise<Outcome> {
   if (flight.busy) return { status: "busy" };
@@ -402,11 +414,14 @@ export function applyOutcome(state: SiteReleaseState, outcome: Outcome): SiteRel
       return { ...state, error: outcome.reason };
     case "rejected":
       // The database refused; nothing was written, so the operator may safely try again.
-      return { ...state, error: outcome.message, needsReload: null };
+      // `lastResult` is cleared with it: a green "đã phát hành revision 1" left standing
+      // next to a red error reads as the outcome of the attempt that just failed.
+      return { ...state, error: outcome.message, lastResult: null, needsReload: null };
     case "unknown":
       return {
         ...state,
         error: null,
+        lastResult: null,
         needsReload: { kind: "unknown", message: outcome.message },
       };
     case "committed-refresh-failed":

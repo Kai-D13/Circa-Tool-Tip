@@ -7,12 +7,12 @@ import type { GuideStatus, GuideValidation } from "./types";
  * status reads it from here, and a test asserts each string appears in no other file.
  *
  * The database values are not the words a person should read. `published` in particular
- * was rendered raw, in green, on /guides — while no release existed at all, so nothing
- * was running anywhere. It means "queued for the next release", which is a completely
- * different thing from "live on the extension", and the two were indistinguishable.
+ * was rendered raw, in green, on /guides — while no release existed at all, so it was
+ * not queued behind anything either. It means "queued for the next release", which is a
+ * completely different thing from "already released", and the two were indistinguishable.
  *
- * "Đang chạy trên extension" is NOT a `guides.status` value. It is a property of
- * `release_heads` — the single source of truth for what the extension actually has
+ * "Bản phát hành hiện hành" is NOT a `guides.status` value. It is a property of
+ * `release_heads` — the single source of truth for which revision is current on Supabase
  * (Plan v1.1 §P0-4) — so it lives here as a separate constant and never appears in a
  * Record keyed by GuideStatus.
  */
@@ -45,11 +45,14 @@ export function statusLabel(status: string): string {
 }
 
 /**
- * Green means one thing only: running on the extension.
+ * Green means one thing only: this revision is the current release.
  *
  * `published` was green before this batch, which is exactly the confusion being removed —
- * an approved guide is waiting, not live. It is amber now, and the head chip on
- * /releases takes the green.
+ * an approved guide is waiting to be released, not released. It is amber now, and the
+ * head chip on /releases takes the green.
+ *
+ * Note what green still does NOT claim: that any POS machine has pulled it. Supabase is
+ * the only thing `release_heads` speaks for.
  */
 export function statusChipClass(status: string): string {
   if (status === "published") return "chip chip-warning";

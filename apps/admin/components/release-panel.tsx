@@ -17,6 +17,7 @@ import {
   runReload,
   runRollback,
   shortChecksum,
+  shouldClearNote,
   type HistoryRow,
   type ReleaseDeps,
   type SiteReleaseState,
@@ -72,7 +73,7 @@ export function ReleasePanel({ site, initial }: { site: SiteOption; initial: Sit
     );
     setState((s) => applyOutcome(s, outcome));
     setPhase("idle");
-    if (outcome.status === "committed") setNote("");
+    if (shouldClearNote(outcome)) setNote("");
     // No router.refresh(): the panel just reloaded its own releases, and a refresh would
     // re-run every read on the page while this component's state — seeded from props —
     // quietly ignored the new ones. Publishing changes no guide row, so nothing else on
@@ -376,7 +377,7 @@ export function ReleasePanel({ site, initial }: { site: SiteOption; initial: Sit
           <strong id={`confirm-rollback-${site.code}`}>Xác nhận rollback</strong>
           <p style={{ margin: 0 }}>
             Site <strong>{site.label}</strong>: lấy lại nội dung của revision <strong>{target.revision}</strong>, trong
-            khi bản đang chạy là revision <strong>{currentRevision(state.head)}</strong>.
+            khi bản phát hành hiện hành là revision <strong>{currentRevision(state.head)}</strong>.
           </p>
           {/* Revision không bao giờ giảm: extension từ chối downgrade, nên hạ số sẽ làm
               mọi máy đã nhận bản cao hơn đứng vĩnh viễn. Rollback = phát hành lại nội
