@@ -19,14 +19,24 @@ import {
   parseRequest,
   portalSenderOk,
 } from "./protocol.js";
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "./config.js";
 import { createHub } from "./hub.js";
 import { createRecorderStore } from "./session.js";
+import { createApi } from "./supabase.js";
+import { createSync } from "./sync.js";
 
 const MANIFEST = chrome.runtime.getManifest();
 /** Single source of truth: whatever the manifest allows, nothing else. */
 const ALLOWED_PORTAL_ORIGINS = originsFromMatches(MANIFEST.externally_connectable?.matches ?? []);
-/** The pages the extension may open and accept recorded steps from. */
-const TARGET_ORIGINS = originsFromMatches(MANIFEST.host_permissions ?? []);
+/**
+ * The pages the extension may open and accept recorded steps from.
+ *
+ * Derived from `content_scripts`, NOT from `host_permissions`. Those two lists stopped
+ * being the same thing when Supabase was added: the extension needs permission to FETCH
+ * from the API host, but the API host is not a page anyone records on, previews, or opens
+ * a tab to. Reading this from host_permissions would have quietly made it one.
+ */
+const TARGET_ORIGINS = originsFromMatches((MANIFEST.content_scripts ?? []).flatMap((cs) => cs.matches ?? []));
 
 const store = createRecorderStore({
   get: (keys) => chrome.storage.session.get(keys),
@@ -34,8 +44,70 @@ const store = createRecorderStore({
   remove: (keys) => chrome.storage.session.remove(keys),
 });
 
+/**
+ * Release cache lives in `chrome.storage.local`, not `session`.
+ *
+ * Session storage is cleared when the browser closes and on every extension update. Using
+ * it here would mean every machine starts each morning, and every update, with no guides
+ * at all until a sync finished.
+ */
+const sync = buildSync();
+
+function buildSync() {
+  try {
+    return createSync({
+      storage: {
+        get: (keys) => chrome.storage.local.get(keys),
+        set: (items) => chrome.storage.local.set(items),
+      },
+      api: createApi({ url: SUPABASE_URL, key: SUPABASE_PUBLISHABLE_KEY }),
+      schema: globalThis.GUIDE_SCHEMA,
+    });
+  } catch (err) {
+    // A build with no config must say so when asked, not crash the worker on load and
+    // take the recorder down with it.
+    console.error("[tooltip] không cấu hình được đồng bộ release:", err);
+    return null;
+  }
+}
+
+const SYNC_ALARM = "tg-sync";
+/**
+ * Chrome treats this as a floor, not a promise — a throttled or sleeping browser fires
+ * later, sometimes much later. The UI says "khoảng mỗi 15 phút" for that reason, and
+ * nothing is allowed to depend on the exact interval.
+ */
+const SYNC_PERIOD_MINUTES = 15;
+
+/**
+ * Alarms do not survive every worker lifecycle event reliably, so this runs on both
+ * install and startup and only creates one when it is genuinely missing — re-creating it
+ * would reset the period and could starve a machine that is rarely restarted.
+ */
+async function ensureSyncAlarm() {
+  try {
+    const existing = await chrome.alarms.get(SYNC_ALARM);
+    if (!existing) await chrome.alarms.create(SYNC_ALARM, { periodInMinutes: SYNC_PERIOD_MINUTES });
+  } catch (err) {
+    console.error("[tooltip] không tạo được alarm đồng bộ:", err);
+  }
+}
+
+function runSync(reason) {
+  if (!sync) return;
+  void sync
+    .syncAll()
+    .then((result) => console.debug(`[tooltip] đồng bộ (${reason}):`, result))
+    .catch((err) => console.error(`[tooltip] đồng bộ (${reason}) lỗi:`, err));
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === SYNC_ALARM) runSync("alarm");
+});
+
 const hub = createHub({
   store,
+  sync,
   tabs: {
     create: (options) => chrome.tabs.create(options),
     remove: (tabId) => chrome.tabs.remove(tabId),
@@ -61,8 +133,14 @@ async function openSessionStorageToContentScripts() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => void openSessionStorageToContentScripts());
-chrome.runtime.onStartup.addListener(() => void openSessionStorageToContentScripts());
+function onLifecycle(reason) {
+  void openSessionStorageToContentScripts();
+  void ensureSyncAlarm();
+  runSync(reason);
+}
+
+chrome.runtime.onInstalled.addListener(() => onLifecycle("installed"));
+chrome.runtime.onStartup.addListener(() => onLifecycle("startup"));
 
 /* -------------------------------------------------------------- one-shot messages */
 

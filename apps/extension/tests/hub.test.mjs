@@ -62,6 +62,22 @@ function fakeTabs({ failCreate = false } = {}) {
   };
 }
 
+/** Counts calls so "one pipeline" is an assertion rather than a hope. */
+function fakeSync() {
+  const calls = { syncAll: 0, status: 0 };
+  return {
+    calls,
+    async syncAll() {
+      calls.syncAll++;
+      return { ok: true, sites: [{ site: "pos", action: "updated", revision: 3 }] };
+    },
+    async status() {
+      calls.status++;
+      return { pos: { state: "ok", revision: 3 }, admin: { state: "no-release", revision: 0 } };
+    },
+  };
+}
+
 function fakePort(name = "portal") {
   return { name, posted: [], postMessage(message) { this.posted.push(message); }, last() { return this.posted.at(-1); } };
 }
@@ -70,13 +86,15 @@ function makeHub(opts = {}) {
   const storage = fakeStorage();
   const store = createRecorderStore(storage);
   const tabs = fakeTabs(opts);
+  const sync = opts.sync === null ? null : (opts.sync ?? fakeSync());
   const hub = createHub({
     store,
     tabs,
     targetOrigins: TARGETS,
     info: { extVersion: "0.1.0", schemaVersion: 5 },
+    sync,
   });
-  return { hub, store, tabs, storage };
+  return { hub, store, tabs, storage, sync };
 }
 
 const START = (over = {}) => ({
@@ -114,7 +132,7 @@ test("HELLO reports the versions the Portal checks compatibility against", async
   assert.equal(reply.data.schemaVersion, 5);
   // The Portal gates features on this list; a capability missing here is a feature it
   // will refuse to use even though the build supports it.
-  assert.deepEqual([...reply.data.capabilities].sort(), ["preview", "probe", "record"]);
+  assert.deepEqual([...reply.data.capabilities].sort(), ["preview", "probe", "record", "sync"]);
 });
 
 test("GET_RECORDING is how the Portal survives a dead port", async () => {
@@ -597,4 +615,47 @@ test("a recording, a probe and a preview can coexist on different tabs", async (
   await hub.handleContent("tg:step", { sessionId: "rec_1", step: step("z") }, recTab);
   assert.equal((await store.get("rec_1")).steps.length, 1);
   assert.equal((await store.get("pvw_1")).index, 0);
+});
+
+/* ================================================= 3A: đồng bộ release */
+
+test("SYNC_NOW chạy pipeline và trả kết quả từng site", async () => {
+  const { hub, sync } = makeHub();
+  const reply = await hub.handleOneShot({ type: "SYNC_NOW", payload: {} });
+
+  assert.equal(reply.ok, true);
+  assert.equal(sync.calls.syncAll, 1);
+  assert.equal(reply.data.sites[0].action, "updated");
+});
+
+test("GET_SYNC_STATUS nói máy này đang giữ bản nào", async () => {
+  const { hub } = makeHub();
+  const reply = await hub.handleOneShot({ type: "GET_SYNC_STATUS", payload: {} });
+
+  assert.equal(reply.data.sites.pos.revision, 3);
+  assert.equal(reply.data.sites.admin.state, "no-release");
+});
+
+test("build không có cấu hình Supabase thì nói thẳng, không giả vờ đồng bộ", async () => {
+  const { hub } = makeHub({ sync: null });
+
+  for (const type of ["SYNC_NOW", "GET_SYNC_STATUS"]) {
+    const reply = await hub.handleOneShot({ type, payload: {} });
+    assert.equal(reply.ok, false);
+    assert.equal(reply.error.code, "NOT_CONFIGURED");
+    assert.match(reply.error.message, /build lại/i);
+  }
+
+  // Và HELLO không được quảng cáo một khả năng sẽ hỏng ngay lần dùng đầu tiên.
+  const hello = await hub.handleOneShot({ type: "HELLO", payload: {} });
+  assert.ok(!hello.data.capabilities.includes("sync"));
+});
+
+test("recorder vẫn chạy bình thường trên build không có cấu hình đồng bộ", async () => {
+  // Thiếu key Supabase không được kéo theo cả tính năng ghi hướng dẫn.
+  const { hub, tabs } = makeHub({ sync: null });
+  const port = fakePort();
+  await hub.handlePort(START(), port);
+  assert.equal(port.last().type, "READY");
+  assert.equal(tabs.created.length, 1);
 });

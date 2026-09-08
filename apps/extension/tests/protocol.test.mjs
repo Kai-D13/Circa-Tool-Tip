@@ -165,3 +165,18 @@ test("every session-store failure has a protocol code to report it with", () => 
     assert.equal(ERROR_CODES[code], code, `thiếu mã ${code}`);
   }
 });
+
+/* --------------------------------------------------- 3A: message đồng bộ release */
+
+test("đồng bộ là message một chiều của Portal, không phải message của trang", () => {
+  for (const type of ["SYNC_NOW", "GET_SYNC_STATUS"]) {
+    assert.ok(ONE_SHOT_TYPES.includes(type), `thiếu ${type}`);
+    assert.ok(!CONTENT_TYPES.includes(type), `${type} không được để trang POS gọi`);
+  }
+});
+
+test("có mã riêng cho build thiếu cấu hình Supabase", () => {
+  // Khác hẳn INTERNAL: đây không phải lỗi chạy, mà là bản build không thể đồng bộ. Portal
+  // cần phân biệt để nói "build lại" thay vì "thử lại".
+  assert.equal(ERROR_CODES.NOT_CONFIGURED, "NOT_CONFIGURED");
+});

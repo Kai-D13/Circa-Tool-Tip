@@ -15,7 +15,7 @@
 export const PROTOCOL_VERSION = 1;
 
 /** One-shot messages (chrome.runtime.sendMessage). */
-export const ONE_SHOT_TYPES = ["HELLO", "GET_RECORDING"];
+export const ONE_SHOT_TYPES = ["HELLO", "GET_RECORDING", "SYNC_NOW", "GET_SYNC_STATUS"];
 
 /** Messages carried over the long-lived `tg-recorder` port. */
 export const PORT_NAME = "tg-recorder";
@@ -50,6 +50,8 @@ export const ERROR_CODES = {
   BAD_STEP: "BAD_STEP",
   /** The tab a job was running in was closed before it could finish. */
   TAB_CLOSED: "TAB_CLOSED",
+  /** The build has no Supabase URL or publishable key, so it cannot sync at all. */
+  NOT_CONFIGURED: "NOT_CONFIGURED",
   INTERNAL: "INTERNAL",
 };
 

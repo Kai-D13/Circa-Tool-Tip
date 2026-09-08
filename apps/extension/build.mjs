@@ -19,6 +19,14 @@
  *    dependencies and only relative `./x.ts` imports — build() asserts both.
  *
  * 2. Copy the manifest and sources, rewriting `externally_connectable` for the target.
+ *
+ * 3. Generate `config.js` with the Supabase URL and publishable key.
+ *
+ *    The key is INJECTED, never committed. It is a publishable key, so it is not a
+ *    secret in the "leaked credentials" sense — everything published is readable with it
+ *    by design (migration 0002 grants SELECT on releases to anon). But a key checked into
+ *    a repo is a key nobody can rotate without a commit, so it stays out of `src/` and a
+ *    test asserts it never appears there.
  */
 
 import { cpSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -31,6 +39,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const SCHEMA_SRC = resolve(REPO, "packages/guide-schema/src");
 const DEFAULT_OUT = resolve(HERE, "dist/unpacked");
+/** Where the Portal already keeps these two values, so nobody configures them twice. */
+const ADMIN_ENV = resolve(REPO, "apps/admin/.env.local");
 
 const RELATIVE_IMPORT = /^\s*import\s+(?:type\s+)?[\s\S]*?from\s+"(\.[^"]+)";?\s*$/gm;
 const ANY_IMPORT = /^\s*import\s/m;
@@ -114,6 +124,49 @@ ${names.map((n) => `    ${n},`).join("\n")}
 `;
 }
 
+/**
+ * Supabase URL + publishable key, from the environment or from the Portal's .env.local.
+ *
+ * Reusing apps/admin/.env.local is deliberate: those exact two values are already there
+ * for the Portal, and a second place to configure them is a second place to get them
+ * wrong. Environment variables win when both exist, so CI can override without a file.
+ */
+export function readSupabaseConfig(env = process.env, envFile = env.TG_SUPABASE_ENV_FILE || ADMIN_ENV) {
+  const fromFile = {};
+  try {
+    for (const line of readFileSync(envFile, "utf8").split(/\r?\n/)) {
+      const at = line.indexOf("=");
+      if (at < 0 || line.trim().startsWith("#")) continue;
+      fromFile[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+    }
+  } catch {
+    // No .env.local is normal on a machine that only builds the extension.
+  }
+
+  // `||`, not `??`: an env var set to the empty string means "not configured", and must
+  // fall through to the file rather than shadow it.
+  const pick = (...names) => {
+    for (const name of names) {
+      const value = env[name] || fromFile[name];
+      if (value) return String(value).trim();
+    }
+    return "";
+  };
+
+  return {
+    url: pick("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"),
+    key: pick("SUPABASE_PUBLISHABLE_KEY", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
+  };
+}
+
+function configModule({ url, key }) {
+  return `/* Sinh tự động bởi apps/extension/build.mjs — ĐỪNG commit file này.
+ * Publishable key được tiêm lúc build; source không bao giờ chứa nó. */
+export const SUPABASE_URL = ${JSON.stringify(url)};
+export const SUPABASE_PUBLISHABLE_KEY = ${JSON.stringify(key)};
+`;
+}
+
 /** realpath when the path exists, otherwise the realpath of its parent + the name. */
 function realish(p) {
   try {
@@ -186,6 +239,16 @@ export function main(argv) {
 
   writeFileSync(resolve(OUT, "vendor/guide-schema.global.js"), bundleGuideSchema(), "utf8");
 
+  const supabase = readSupabaseConfig();
+  if (portalOrigin && (!supabase.url || !supabase.key)) {
+    // A release build that cannot reach Supabase is a build that ships 25 machines a
+    // permanently empty guide menu. Fail here, not in the field.
+    throw new Error(
+      "Bản release cần SUPABASE_URL và SUPABASE_PUBLISHABLE_KEY (hoặc apps/admin/.env.local).",
+    );
+  }
+  writeFileSync(resolve(OUT, "config.js"), configModule(supabase), "utf8");
+
   for (const f of readdirSync(resolve(HERE, "src"))) {
     cpSync(resolve(HERE, "src", f), resolve(OUT, f));
   }
@@ -209,6 +272,9 @@ export function main(argv) {
   console.log(`  chế độ    : ${portalOrigin ? "release -> " + portalOrigin : "dev -> localhost"}`);
   console.log(`  portal    : ${manifest.externally_connectable.matches.join(", ")}`);
   console.log(`  content   : ${manifest.content_scripts[0].matches.join(", ")}`);
+  console.log(
+    `  supabase  : ${supabase.url || "(chưa cấu hình)"} · key ${supabase.key ? "đã tiêm" : "THIẾU — sync sẽ không chạy"}`,
+  );
   console.log("\nChrome -> chrome://extensions -> Developer mode -> Load unpacked -> chọn thư mục trên.");
 }
 

@@ -18,8 +18,8 @@ Google Apps Script). **Không sửa repo cũ** — nó vẫn đang chạy produc
 | 2B.2A | Nền tảng extension MV3: manifest, service worker, giao thức message, state phiên ghi | Xong — QA pass ([`docs/QA_LOCALHOST_2B2A.md`](docs/QA_LOCALHOST_2B2A.md)) |
 | 2B.2B | Recorder chọn element trên POS/Admin | Xong — QA pass ([`docs/QA_LOCALHOST_2B2B.md`](docs/QA_LOCALHOST_2B2B.md)) |
 | 2B.2C | Probe selector + preview draft | Xong — QA pass ([`docs/QA_LOCALHOST_2B2C.md`](docs/QA_LOCALHOST_2B2C.md)) |
-| 2B.3 | Portal phát hành: publish / rollback theo site | Code xong, chờ QA — [`docs/QA_LOCALHOST_2B3.md`](docs/QA_LOCALHOST_2B3.md) |
-| 3A | Extension đồng bộ release + cache 15 phút | Chưa bắt đầu |
+| 2B.3 | Portal phát hành: publish / rollback theo site | Xong — [`docs/QA_LOCALHOST_2B3.md`](docs/QA_LOCALHOST_2B3.md) |
+| 3A | Extension đồng bộ release + cache 15 phút | Code xong, chờ QA — [`docs/QA_LOCALHOST_3A.md`](docs/QA_LOCALHOST_3A.md) |
 | 3B | Runtime chạy guide thật trên POS/Admin | Chưa bắt đầu |
 | 3C | Tab Tool-tip + menu hướng dẫn (UI adapter POS/Admin) | Chưa bắt đầu |
 | 3D | Integration + đóng gói | Chưa bắt đầu |
@@ -87,6 +87,12 @@ Importer đọc file export v4 và ghi ra `data/legacy-import.v5.json` +
 - **Portal chỉ có hai biến môi trường**, cả hai đều public (`.env.example`). Phân quyền
   thật nằm ở `requireAdmin()` phía server + RLS; `proxy.ts` chỉ refresh session và
   redirect thô.
+- **Extension đọc cùng hai biến đó lúc build** và ghi ra `dist/unpacked/config.js`.
+  Publishable key không nằm trong `src/`; có test khẳng định điều đó. Bản `--release`
+  từ chối build nếu thiếu cấu hình.
+- **Cache release ở `chrome.storage.local`, không phải `session`.** Session bị xoá khi
+  đóng trình duyệt và mỗi lần cập nhật extension — 25 máy sẽ cùng khởi động với không có
+  hướng dẫn nào. Sync hỏng thì giữ nguyên bản cũ, không bao giờ xoá.
 
 ## Tài nguyên
 

@@ -22,8 +22,9 @@ import { ERROR_CODES, fail, isAllowedTargetUrl, ok } from "./protocol.js";
  * @param {{create(opts):Promise<{id:number}>, remove(tabId:number):Promise<any>, sendMessage(tabId:number, msg:object):Promise<any>}} deps.tabs
  * @param {string[]} deps.targetOrigins origins the extension may open and accept steps from
  * @param {{extVersion:string, schemaVersion:number|null}} deps.info
+ * @param {{syncAll():Promise<object>, status():Promise<object>}|null} deps.sync
  */
-export function createHub({ store, tabs, targetOrigins, info }) {
+export function createHub({ store, tabs, targetOrigins, info, sync = null }) {
   /**
    * sessionId -> the Portal port currently watching it.
    *
@@ -59,7 +60,9 @@ export function createHub({ store, tabs, targetOrigins, info }) {
           schemaVersion: info.schemaVersion,
           // Everything this build can actually do. The Portal will gate features on
           // this list, so a capability missing here is a feature it will refuse to use.
-          capabilities: ["record", "probe", "preview"],
+          // `sync` drops out when the build carries no Supabase config — an honest
+          // answer, rather than advertising something that would fail on first use.
+          capabilities: ["record", "probe", "preview", ...(sync ? ["sync"] : [])],
         });
 
       case "GET_RECORDING": {
@@ -70,9 +73,29 @@ export function createHub({ store, tabs, targetOrigins, info }) {
         return ok("GET_RECORDING", { session });
       }
 
+      case "SYNC_NOW": {
+        if (!sync) return notConfigured("SYNC_NOW");
+        // syncAll() shares one pipeline, so a run already under way is joined rather
+        // than duplicated — pressing Đồng bộ twice costs one download, not two.
+        return ok("SYNC_NOW", await sync.syncAll());
+      }
+
+      case "GET_SYNC_STATUS": {
+        if (!sync) return notConfigured("GET_SYNC_STATUS");
+        return ok("GET_SYNC_STATUS", { sites: await sync.status() });
+      }
+
       default:
         return fail(type, ERROR_CODES.UNKNOWN_TYPE, `Chưa xử lý "${type}".`);
     }
+  }
+
+  function notConfigured(type) {
+    return fail(
+      type,
+      ERROR_CODES.NOT_CONFIGURED,
+      "Bản build này không có cấu hình Supabase — build lại với SUPABASE_URL và SUPABASE_PUBLISHABLE_KEY.",
+    );
   }
 
   /**

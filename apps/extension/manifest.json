@@ -4,10 +4,11 @@
   "version": "0.1.0",
   "default_locale": "vi",
   "description": "Hướng dẫn thao tác trên POS và Admin của Circa.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "alarms"],
   "host_permissions": [
     "https://pos.v2.circa.vn/*",
-    "https://admin.v2.circa.vn/*"
+    "https://admin.v2.circa.vn/*",
+    "https://yoqzsvcbsornqjcatdvy.supabase.co/*"
   ],
   "externally_connectable": {
     "matches": ["http://localhost/*"]
