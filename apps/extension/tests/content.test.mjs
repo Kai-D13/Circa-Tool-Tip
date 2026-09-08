@@ -19,7 +19,7 @@ const EXT = resolve(HERE, "..");
  * asserts what the operator would actually see: the number on the bar, the text on the
  * card, and what happens when they press a button on it.
  */
-function loadContent({ job, matches = {}, url = "https://pos.v2.circa.vn/trang-chu" }) {
+function loadContent({ job, matches = {}, url = "https://pos.v2.circa.vn/trang-chu", log = [] }) {
   const out = mkdtempSync(join(tmpdir(), "tg-ext-"));
   try {
     execFileSync(process.execPath, [resolve(EXT, "build.mjs"), "--out", out], { stdio: "pipe" });
@@ -27,7 +27,11 @@ function loadContent({ job, matches = {}, url = "https://pos.v2.circa.vn/trang-c
     const sent = [];
     let onMessage = null;
     const timers = [];
-    const parsed = new URL(url);
+    const observers = [];
+    let parsed = new URL(url);
+    // Mutated by tg:tour-state exactly as the worker would, so the page reads back what it
+    // just wrote instead of a fixture the test controls independently.
+    let current = job;
 
     const document = fakeDocument(matches);
     const navigations = [];
@@ -38,6 +42,17 @@ function loadContent({ job, matches = {}, url = "https://pos.v2.circa.vn/trang-c
       crypto: globalThis.crypto,
       Element: FakeElement,
       innerHeight: 800,
+      MutationObserver: class {
+        constructor(callback) {
+          this.callback = callback;
+          this.live = true;
+          observers.push(this);
+        }
+        observe() {}
+        disconnect() {
+          this.live = false;
+        }
+      },
       document,
       location: {
         href: url,
@@ -58,8 +73,17 @@ function loadContent({ job, matches = {}, url = "https://pos.v2.circa.vn/trang-c
         runtime: {
           async sendMessage(message) {
             sent.push(message);
+            log.push({ kind: "send", type: message.type, message });
             if (message.type === "tg:hello") {
-              return { v: 1, ok: true, type: "tg:hello", data: { tabId: 7, job } };
+              return { v: 1, ok: true, type: "tg:hello", data: { tabId: 7, job: current } };
+            }
+            if (message.type === "tg:tour-state") {
+              current = {
+                ...current,
+                index: message.index === undefined ? current.index : message.index,
+                tour: message.tour === undefined ? current.tour : message.tour,
+              };
+              return { v: 1, ok: true, type: message.type, data: { job: current } };
             }
             return { v: 1, ok: true, type: message.type, data: {} };
           },
@@ -71,18 +95,47 @@ function loadContent({ job, matches = {}, url = "https://pos.v2.circa.vn/trang-c
     ctx.globalThis = ctx;
     vm.createContext(ctx);
 
-    // `location.href = ...` is how the preview navigates; record it instead of pretending
-    // a page load happened.
+    // `location.href = ...` is how a tour navigates; record it instead of pretending a
+    // page load happened.
+    let href = url;
     Object.defineProperty(ctx.location, "href", {
-      get: () => url,
+      get: () => href,
       set: (v) => navigations.push(v),
       configurable: true,
     });
 
-    for (const file of ["vendor/guide-schema.global.js", "selector.js", "resolve.js", "overlay.js", "content.js"]) {
+    /** A client-side route change: the URL moves with no page load, as on POS and Admin. */
+    function spaNavigate(next) {
+      href = next;
+      parsed = new URL(next);
+      Object.assign(ctx.location, {
+        origin: parsed.origin,
+        pathname: parsed.pathname,
+        search: parsed.search,
+        hash: parsed.hash,
+      });
+      for (const fn of timers) fn();
+    }
+
+    // Taken from the built manifest, not from a list here: Chrome loads exactly these, in
+    // exactly this order, and a hardcoded copy would silently stop matching the moment a
+    // script is added.
+    const manifest = JSON.parse(readFileSync(resolve(out, "manifest.json"), "utf8"));
+    for (const file of manifest.content_scripts[0].js) {
       vm.runInContext(readFileSync(resolve(out, file), "utf8"), ctx);
     }
-    return { ctx, document, sent, navigations, deliver: (message) => onMessage(message), timers };
+    return {
+      ctx,
+      document,
+      sent,
+      navigations,
+      log,
+      observers,
+      spaNavigate,
+      setJob: (next) => (current = next),
+      deliver: (message) => onMessage(message),
+      timers,
+    };
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
@@ -170,10 +223,18 @@ function fakeDocument(matches) {
 }
 
 /** A page element the resolver can find, with text on it. */
-function pageEl(text, tag = "button") {
+function pageEl(text, tag = "button", { log = null, id = "el", throws = false, hidden = false, disabled = false } = {}) {
   const el = fakeEl(tag);
   el.innerText = text;
   el.textContent = text;
+  el.clicks = 0;
+  if (disabled) el.disabled = true;
+  if (hidden) el.getBoundingClientRect = () => ({ top: 0, left: 0, width: 0, height: 0 });
+  el.click = () => {
+    el.clicks += 1;
+    if (log) log.push({ kind: "click", id });
+    if (throws) throw new Error("phần tử từ chối click");
+  };
   return el;
 }
 
@@ -567,4 +628,427 @@ test("a text-mismatched step does not jam the preview", async () => {
   pressCard(document, "Tiếp");
   await tick();
   assert.ok(sent.some((m) => m.type === "tg:preview-step" && m.index === 1), "bước hỏng không được chặn cả bộ");
+});
+
+/* ============================ 3B: chạy guide thật ============================== */
+
+const liveStep = (over = {}) => {
+  const step = {
+    id: "st_1",
+    site: "pos",
+    selectors: ["#basic-button"],
+    matchText: "Cài Đặt",
+    tag: "button",
+    title: "Mở Cài Đặt",
+    content: "Bấm nút Cài Đặt.",
+    urlPattern: "/trang-chu",
+    action: { type: "highlight", expectedUrl: "", timeoutMs: 20 },
+    ...over,
+  };
+  return { ...step, navigationUrl: over.navigationUrl ?? step.urlPattern };
+};
+
+const liveJob = (steps, over = {}) =>
+  session({
+    id: "live_1",
+    kind: "live",
+    job: {
+      kind: "live",
+      guide: { id: "g1", name: "BÁN HÀNG", site: "pos", steps },
+      sites: SITES,
+      releaseSite: "pos",
+      releaseRevision: 3,
+      releaseChecksum: "sha256:aaa",
+    },
+    index: 0,
+    tour: { phase: "showing", pending: null, navGuard: null, executedStepId: null },
+    ...over,
+  });
+
+const sentOfType = (sent, type) => sent.filter((m) => m.type === type);
+
+/* --------------------------------------------------------------- năm action */
+
+test("3B: highlight chỉ tô sáng, không bấm gì, Tiếp thì sang bước kế", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const { document, sent } = loadContent({
+    job: liveJob([liveStep(), liveStep({ id: "st_2" })]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  assert.equal(cardText(document, ".title"), "Mở Cài Đặt");
+  assert.match(cardText(document, ".meta"), /^Bước 1\/2 · BÁN HÀNG/);
+  assert.ok(boxIsGreen(document));
+  assert.equal(el.clicks, 0, "highlight không được bấm hộ");
+
+  pressCard(document, "Tiếp");
+  await tick();
+  assert.equal(el.clicks, 0);
+  assert.equal(sentOfType(sent, "tg:tour-state").at(-1).index, 1);
+});
+
+test("3B: click_next bấm đúng một lần rồi sang bước kế", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const { document, sent } = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "click_next", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  pressCard(document, "Tiếp");
+  await tick();
+
+  assert.equal(el.clicks, 1);
+  assert.equal(sentOfType(sent, "tg:tour-state").at(-1).index, 1);
+});
+
+test("3B: click_wait_url ghi pending TRƯỚC khi bấm, và không tự sang bước", async () => {
+  // Cú bấm có thể vứt cả trang đi. Pending ghi sau cú bấm là pending chưa từng tồn tại.
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const { document, sent } = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "click_wait_url", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2", urlPattern: "/don-hang" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  pressCard(document, "Tiếp");
+  await tick();
+
+  const savedAt = log.findIndex((e) => e.kind === "send" && e.type === "tg:tour-state" && e.message.tour?.pending);
+  const clickedAt = log.findIndex((e) => e.kind === "click");
+  assert.ok(savedAt >= 0, "phải ghi pending");
+  assert.ok(clickedAt >= 0, "phải bấm");
+  assert.ok(savedAt < clickedAt, "pending phải được ghi TRƯỚC cú bấm");
+
+  const pending = log[savedAt].message.tour.pending;
+  assert.equal(pending.nextIndex, 1);
+  assert.equal(pending.expectedUrl, "/don-hang");
+  assert.equal(sentOfType(sent, "tg:tour-state").at(-1).index, undefined, "chưa được sang bước — còn chờ URL");
+});
+
+test("3B: auto_click_next tự bấm đúng một lần rồi sang bước kế", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const { document, sent } = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "auto_click_next", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  assert.equal(el.clicks, 1, "tự bấm mà không cần ai bấm Tiếp");
+  assert.equal(sentOfType(sent, "tg:tour-state").at(-1).index, 1);
+  // Đã bấm xong thì thẻ chuyển luôn sang bước 2 — đó mới là hành vi đúng.
+  assert.match(cardText(document, ".meta"), /^Bước 2\/2/);
+});
+
+test("3B: auto_click_wait_url ghi pending trước, tự bấm, rồi đứng chờ", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const { document } = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "auto_click_wait_url", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2", urlPattern: "/don-hang" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  const savedAt = log.findIndex((e) => e.kind === "send" && e.message?.tour?.pending);
+  const clickedAt = log.findIndex((e) => e.kind === "click");
+  assert.ok(savedAt >= 0 && savedAt < clickedAt, "pending trước, click sau");
+  assert.equal(el.clicks, 1);
+  // Vẫn đứng ở bước 1 chờ URL, và nói rõ đây là bước extension tự làm.
+  assert.match(cardText(document, ".meta"), /^Bước 1\/2/);
+  assert.match(cardText(document, ".note"), /tự thao tác/);
+});
+
+test("3B: bước cuối là auto-click thì vẫn bấm rồi mới kết thúc", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const { document, sent } = loadContent({
+    job: liveJob([liveStep({ action: { type: "auto_click_next", expectedUrl: "", timeoutMs: 20 } })]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  assert.equal(el.clicks, 1, "bước cuối vẫn phải được thực hiện");
+  assert.ok(sentOfType(sent, "tg:tour-exit").length > 0, "rồi mới kết thúc tour");
+  assert.equal(document.body.children.length, 0, "overlay được dọn");
+});
+
+/* ---------------------------------------------------- không bấm hai lần */
+
+test("3B: vẽ lại không làm bước auto bấm lần thứ hai", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const { deliver } = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "auto_click_wait_url", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2", urlPattern: "/don-hang" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+  assert.equal(el.clicks, 1);
+
+  // Worker đẩy lại chính phiên đó (điều xảy ra sau mỗi lần ghi state).
+  deliver({ type: "tg:session", session: liveJob([], {}) });
+  await tick();
+  assert.equal(el.clicks, 1, "executedStepId phải chặn cú bấm thứ hai");
+});
+
+/* ------------------------------------------------------- từ chối bấm khi không chắc */
+
+test("3B: R1 text đã khác thì không tự bấm, và nói rõ", async () => {
+  const log = [];
+  const wrong = pageEl("Thiết Lập", "button", { log });
+  const { document } = loadContent({
+    job: liveJob([liveStep({ action: { type: "auto_click_next", expectedUrl: "", timeoutMs: 20 } })]),
+    matches: { "#basic-button": [wrong] },
+    log,
+  });
+  await tick();
+
+  assert.equal(wrong.clicks, 0, "tuyệt đối không bấm");
+  assert.match(cardText(document, ".note"), /Đang tìm thành phần/);
+});
+
+test("3B: selector khớp nhiều phần tử mà text không lọc được thì không tự bấm", async () => {
+  const log = [];
+  const a = pageEl("Một", "button", { log, id: "a" });
+  const b = pageEl("Hai", "button", { log, id: "b" });
+  const { document } = loadContent({
+    job: liveJob([
+      liveStep({ matchText: "", intent: "first_item", action: { type: "auto_click_next", expectedUrl: "", timeoutMs: 20 } }),
+    ]),
+    matches: { "#basic-button": [a, b] },
+    log,
+  });
+  await tick();
+
+  assert.equal(a.clicks + b.clicks, 0, "first_item không phải giấy phép để bấm");
+  assert.match(cardText(document, ".note"), /Đang tìm thành phần/);
+});
+
+test("3B: phần tử ẩn hoặc bị vô hiệu hoá thì không tự bấm", async () => {
+  for (const opts of [{ hidden: true }, { disabled: true }]) {
+    const log = [];
+    const el = pageEl("Cài Đặt", "button", { log, ...opts });
+    const { document } = loadContent({
+      job: liveJob([liveStep({ action: { type: "auto_click_next", expectedUrl: "", timeoutMs: 20 } })]),
+      matches: { "#basic-button": [el] },
+      log,
+    });
+    await tick();
+    assert.equal(el.clicks, 0, JSON.stringify(opts));
+    assert.match(cardText(document, ".note"), /Đang tìm thành phần/);
+  }
+});
+
+test("3B: không tìm thấy phần tử thì dừng lại và mời thử lại, không bỏ qua bước", async () => {
+  const { document, sent } = loadContent({ job: liveJob([liveStep(), liveStep({ id: "st_2" })]), matches: {} });
+  await tick();
+
+  assert.match(cardText(document, ".note"), /Đang tìm thành phần/);
+  assert.equal(sentOfType(sent, "tg:tour-state").length, 0, "không được lặng lẽ đi tiếp");
+  assert.ok(cardButtons(document).some((b) => b.textContent === "Thử lại"));
+});
+
+test("3B: bấm lỗi thì KHÔNG tăng bước", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log, throws: true });
+  const { document, sent } = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "click_next", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  pressCard(document, "Tiếp");
+  await tick();
+
+  assert.equal(el.clicks, 1, "đã thử bấm");
+  const advanced = sentOfType(sent, "tg:tour-state").filter((m) => m.index !== undefined);
+  assert.equal(advanced.length, 0, "bấm hỏng thì không được sang bước sau");
+  assert.match(cardText(document, ".body"), /Không bấm được/);
+});
+
+/* ------------------------------------------------------------------ điều hướng */
+
+test("3B: bước ở trang khác thì điều hướng tới đúng origin của nó", async () => {
+  const { navigations, log } = loadContent({
+    job: liveJob([liveStep({ site: "admin", urlPattern: "/quan-tri" })]),
+    matches: {},
+  });
+  assert.ok(log);
+  await tick();
+  assert.deepEqual(navigations, ["https://admin.v2.circa.vn/quan-tri"]);
+});
+
+test("3B: navGuard chặn nhảy vòng POS ↔ Admin", async () => {
+  // Đã chuyển sang Admin mà rơi vào màn đăng nhập: chuyển lần nữa là nhảy vô tận.
+  const { document, navigations } = loadContent({
+    job: liveJob([liveStep({ site: "admin", urlPattern: "/quan-tri" })], {
+      tour: { phase: "waiting_url", pending: null, navGuard: { url: "https://admin.v2.circa.vn/quan-tri" }, executedStepId: null },
+    }),
+    url: "https://admin.v2.circa.vn/dang-nhap",
+    matches: {},
+  });
+  await tick();
+
+  assert.deepEqual(navigations, [], "không được điều hướng lần thứ hai");
+  assert.equal(cardText(document, ".title"), "Đang chờ trang");
+  assert.ok(cardButtons(document).some((b) => b.textContent === "Chờ thêm"));
+});
+
+test("3B: ghi navGuard trước khi rời trang", async () => {
+  const log = [];
+  const { navigations } = loadContent({
+    job: liveJob([liveStep({ site: "admin", urlPattern: "/quan-tri" })]),
+    matches: {},
+    log,
+  });
+  await tick();
+
+  const guardAt = log.findIndex((e) => e.kind === "send" && e.message?.tour?.navGuard);
+  assert.ok(guardAt >= 0, "phải ghi navGuard");
+  assert.equal(navigations.length, 1);
+});
+
+/* --------------------------------------------------------------------- thoát */
+
+test("3B: Thoát dọn sạch overlay và báo cho worker", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const { document, sent } = loadContent({
+    job: liveJob([liveStep(), liveStep({ id: "st_2" })]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  pressCard(document, "Thoát");
+  await tick();
+
+  assert.equal(document.body.children.length, 0, "overlay phải biến mất");
+  assert.ok(sentOfType(sent, "tg:tour-exit").length > 0);
+});
+
+test("3B: Quay lại bị khoá ở bước đầu", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const { document } = loadContent({
+    job: liveJob([liveStep(), liveStep({ id: "st_2" })]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+  const back = cardButtons(document).find((b) => b.textContent === "Quay lại");
+  assert.equal(back.getAttribute("disabled"), "disabled");
+});
+
+test("3B: tour tiếp tục đúng bước sau khi trang tải lại", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const { document } = loadContent({
+    job: liveJob([liveStep(), liveStep({ id: "st_2", title: "Bước hai" })], { index: 1 }),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+  assert.equal(cardText(document, ".title"), "Bước hai");
+  assert.match(cardText(document, ".meta"), /^Bước 2\/2/);
+});
+
+/* ------------------------------------------- SPA navigation và MutationObserver */
+
+test("3B: điều hướng SPA hỏi lại worker và chạy tiếp đúng bước", async () => {
+  // POS và Admin là SPA: đổi route không tải lại script, nên không có sự kiện load nào để
+  // bám. Watcher phát hiện URL đổi rồi hỏi worker — nơi giữ pending và matcher chung.
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const run = loadContent({
+    job: liveJob([liveStep(), liveStep({ id: "st_2", urlPattern: "/don-hang", title: "Bước hai" })]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  // Worker đã chuyển tour sang bước 2 vì pending đã tới nơi.
+  run.setJob(liveJob([liveStep(), liveStep({ id: "st_2", urlPattern: "/don-hang", title: "Bước hai" })], { index: 1 }));
+  run.spaNavigate("https://pos.v2.circa.vn/don-hang");
+  await tick();
+
+  const hellos = run.sent.filter((m) => m.type === "tg:hello");
+  assert.ok(hellos.length >= 2, "đổi route phải hỏi lại worker");
+  assert.deepEqual(hellos.at(-1).loc.pathname, "/don-hang", "và gửi kèm vị trí hiện tại");
+  assert.equal(cardText(run.document, ".title"), "Bước hai");
+});
+
+test("3B: MutationObserver chỉ đánh thức tour khi phần tử THẬT SỰ dùng được", async () => {
+  // "Selector đã xuất hiện" là chưa đủ: nó có thể khớp một phần tử đang ẩn, hoặc một phần
+  // tử mà text đã đổi dưới chân guide. Observer phải chạy lại đúng cổng đó.
+  const log = [];
+  const wrong = pageEl("Thiết Lập", "button", { log });
+  const matches = { "#basic-button": [wrong] };
+  const run = loadContent({
+    job: liveJob([liveStep({ action: { type: "auto_click_next", expectedUrl: "", timeoutMs: 60000 } })]),
+    matches,
+    log,
+  });
+  await tick();
+
+  assert.match(cardText(run.document, ".note"), /Đang tìm thành phần/);
+  assert.equal(run.observers.length, 1, "phải theo dõi DOM");
+
+  // DOM đổi nhưng vẫn là phần tử sai text: không được đánh thức, không được bấm.
+  run.observers[0].callback();
+  await tick();
+  assert.equal(wrong.clicks, 0);
+  assert.equal(run.observers[0].live, true, "vẫn còn phải chờ");
+
+  // Giờ phần tử đúng xuất hiện.
+  const right = pageEl("Cài Đặt", "button", { log, id: "right" });
+  matches["#basic-button"] = [right];
+  run.observers[0].callback();
+  await tick();
+
+  assert.equal(right.clicks, 1, "đúng phần tử thì tour chạy tiếp");
+});
+
+test("3B: hết thời gian chờ thì dừng lại nói rõ, không bấm bừa", async () => {
+  const log = [];
+  const run = loadContent({
+    job: liveJob([liveStep({ action: { type: "auto_click_next", expectedUrl: "", timeoutMs: 15 } })]),
+    matches: {},
+    log,
+  });
+  await tick();
+  await new Promise((r) => setTimeout(r, 40));
+
+  assert.equal(cardText(run.document, ".title"), "Không mở được trang của bước");
+  assert.equal(log.filter((e) => e.kind === "click").length, 0);
 });

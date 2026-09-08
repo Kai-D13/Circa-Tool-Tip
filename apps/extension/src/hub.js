@@ -15,6 +15,7 @@
  */
 
 import { ERROR_CODES, fail, isAllowedTargetUrl, ok } from "./protocol.js";
+import { SITES as SITE_CODES } from "./sync.js";
 
 /**
  * @param {object} deps
@@ -22,9 +23,21 @@ import { ERROR_CODES, fail, isAllowedTargetUrl, ok } from "./protocol.js";
  * @param {{create(opts):Promise<{id:number}>, remove(tabId:number):Promise<any>, sendMessage(tabId:number, msg:object):Promise<any>}} deps.tabs
  * @param {string[]} deps.targetOrigins origins the extension may open and accept steps from
  * @param {{extVersion:string, schemaVersion:number|null}} deps.info
- * @param {{syncAll():Promise<object>, status():Promise<object>}|null} deps.sync
+ * @param {{syncAll():Promise<object>, status():Promise<object>, readCache(site):Promise<object|null>}|null} deps.sync
+ * @param {object|null} deps.schema  GUIDE_SCHEMA — the shared URL matcher and validator
+ * @param {object|null} deps.tour    TG_TOUR — the shared runtime decision table
+ * @param {() => string} [deps.newId]
  */
-export function createHub({ store, tabs, targetOrigins, info, sync = null }) {
+export function createHub({
+  store,
+  tabs,
+  targetOrigins,
+  info,
+  sync = null,
+  schema = null,
+  tour = null,
+  newId = () => "live_" + crypto.randomUUID().replace(/-/g, "").slice(0, 12),
+}) {
   /**
    * sessionId -> the Portal port currently watching it.
    *
@@ -62,7 +75,13 @@ export function createHub({ store, tabs, targetOrigins, info, sync = null }) {
           // this list, so a capability missing here is a feature it will refuse to use.
           // `sync` drops out when the build carries no Supabase config — an honest
           // answer, rather than advertising something that would fail on first use.
-          capabilities: ["record", "probe", "preview", ...(sync ? ["sync"] : [])],
+          capabilities: [
+            "record",
+            "probe",
+            "preview",
+            ...(sync ? ["sync"] : []),
+            ...(sync && schema && tour ? ["live"] : []),
+          ],
         });
 
       case "GET_RECORDING": {
@@ -281,8 +300,31 @@ export function createHub({ store, tabs, targetOrigins, info, sync = null }) {
         // findByTab throws DUPLICATE_TAB when the one-job-per-tab invariant broke. Report
         // it instead of handing the page an arbitrary session.
         const session = await store.findByTab(tabId);
-        // One reply for all three kinds; the page branches on session.kind.
-        return ok("tg:hello", { tabId, job: session });
+        // One reply for all four kinds; the page branches on session.kind. A live tour is
+        // resolved against the location FIRST, so a page that loaded after a navigation
+        // is handed the step it arrived at rather than the one it left.
+        const job = session?.kind === "live" ? await resumeTour(session, raw.loc) : session;
+        return ok("tg:hello", { tabId, job });
+      }
+
+      case "tg:start-tour":
+        return startTour(raw, tabId);
+
+      case "tg:tour-state": {
+        const session = await liveSessionFor(tabId);
+        if (!session) return fail("tg:tour-state", ERROR_CODES.NO_SESSION, "Tab này không đang chạy hướng dẫn nào.");
+        const moved = await store.setTour(session.id, patchOf(raw), tabId);
+        if (!moved) return fail("tg:tour-state", ERROR_CODES.NO_SESSION, "Tour đã kết thúc.");
+        return ok("tg:tour-state", { job: moved });
+      }
+
+      case "tg:tour-exit": {
+        const session = await liveSessionFor(tabId);
+        if (!session) return ok("tg:tour-exit", { stopped: false });
+        // Discarded, not stopped: a finished tour leaves nothing behind to resume, and a
+        // `done` row would keep occupying the tab against the one-job-per-tab rule.
+        await store.discard(session.id);
+        return ok("tg:tour-exit", { stopped: true });
       }
 
       case "tg:step": {
@@ -338,6 +380,110 @@ export function createHub({ store, tabs, targetOrigins, info, sync = null }) {
     }
   }
 
+  /* ------------------------------------------------------------ live tours */
+
+  async function liveSessionFor(tabId) {
+    const session = await store.findByTab(tabId);
+    return session && session.kind === "live" ? session : null;
+  }
+
+  /** Only the two fields a tour is allowed to move; the store refuses anything else. */
+  function patchOf(raw) {
+    const patch = {};
+    if (raw.index !== undefined) patch.index = raw.index;
+    if (raw.tour !== undefined) patch.tour = raw.tour;
+    return patch;
+  }
+
+  /**
+   * Start a tour from the CACHE, and pin everything about it.
+   *
+   * The tab id comes from the sender, never from the payload — a page that could name its
+   * own tab could start a tour on somebody else's. The guide is snapshotted into the
+   * session along with the revision and checksum it came from, so a sync that lands
+   * halfway through changes the cache and nothing else. The new release applies to the
+   * NEXT tour, which is the only moment at which changing the content is not a surprise.
+   */
+  async function startTour(raw, tabId) {
+    if (!sync || !schema || !tour) return notConfigured("tg:start-tour");
+
+    const site = String(raw.releaseSite || "");
+    if (!SITE_CODES.includes(site)) {
+      return fail("tg:start-tour", ERROR_CODES.BAD_SITE, `Site "${site}" không thuộc bản build này.`);
+    }
+
+    const payload = await sync.readCache(site);
+    if (!payload) {
+      return fail("tg:start-tour", ERROR_CODES.NO_RELEASE, `Chưa có bản phát hành nào cho site ${site}. Bấm Đồng bộ trước.`);
+    }
+
+    // Validated again at use, not only at download: the cache could have been written by
+    // an older build, or edited. Running an invalid release is worse than refusing to.
+    const result = schema.validateReleasePayload(payload, site);
+    if (result.errors.length) {
+      return fail(
+        "tg:start-tour",
+        ERROR_CODES.INVALID_RELEASE,
+        `Bản phát hành trong máy không hợp lệ: ${result.errors[0]}`,
+      );
+    }
+
+    const status = (await sync.status())[site];
+    if (status && status.revision && Number(status.revision) !== Number(payload.revision)) {
+      return fail(
+        "tg:start-tour",
+        ERROR_CODES.INVALID_RELEASE,
+        `Cache đang là revision ${payload.revision} nhưng trạng thái đồng bộ ghi ${status.revision}.`,
+      );
+    }
+
+    const guide = (payload.guides || []).find((g) => g.id === raw.guideId);
+    if (!guide) {
+      return fail("tg:start-tour", ERROR_CODES.GUIDE_NOT_FOUND, `Không tìm thấy bộ hướng dẫn trong bản phát hành ${site}.`);
+    }
+
+    // store.start refuses a tab another job already owns, so a recorder, a probe or a
+    // preview on this tab blocks the tour rather than fighting it for the page.
+    const session = await store.start({
+      id: newId(),
+      guideId: guide.id,
+      site: guide.site,
+      startUrl: guide.start?.url ?? "",
+      tabId,
+      kind: "live",
+      job: {
+        kind: "live",
+        guide,
+        sites: payload.sites,
+        releaseSite: site,
+        releaseRevision: payload.revision,
+        releaseChecksum: payload.checksum,
+      },
+      tour: { phase: "showing", pending: null, navGuard: null, executedStepId: null },
+    });
+    return ok("tg:start-tour", { job: session });
+  }
+
+  /**
+   * After a navigation, decide whether the tour has arrived where it was heading.
+   *
+   * The comparison uses the shared URL matcher against the step being aimed at, not a
+   * string compare — a step that waits for `/don-hang` must also accept `/don-hang?tab=2`.
+   */
+  async function resumeTour(session, loc) {
+    const state = session.tour ?? {};
+    if (!state.pending || !loc || !schema || !tour) return session;
+
+    const view = { ...session.job, index: session.index, pending: state.pending, navGuard: state.navGuard };
+    if (!tour.pendingArrived(view, loc, schema)) return session;
+
+    const moved = await store.setTour(session.id, {
+      index: state.pending.nextIndex,
+      tour: { phase: "showing", pending: null, navGuard: null, executedStepId: null },
+    });
+    return moved ?? session;
+  }
+
   /**
    * Closing the tab ends whatever was running in it.
    *
@@ -353,6 +499,13 @@ export function createHub({ store, tabs, targetOrigins, info, sync = null }) {
   async function onTabRemoved(tabId) {
     const session = await store.findByTab(tabId).catch(() => null);
     if (!session) return;
+    if (session.kind === "live") {
+      // Nothing is watching a live tour from the Portal, and a stopped row would keep
+      // holding the tab. Drop it.
+      await store.discard(session.id);
+      return;
+    }
+
     const done = await store.stop(session.id);
 
     if (session.kind === "preview") {

@@ -52,6 +52,14 @@ export const ERROR_CODES = {
   TAB_CLOSED: "TAB_CLOSED",
   /** The build has no Supabase URL or publishable key, so it cannot sync at all. */
   NOT_CONFIGURED: "NOT_CONFIGURED",
+  /** Nothing is cached for that site yet — sync has never succeeded. */
+  NO_RELEASE: "NO_RELEASE",
+  /** The cached release exists but does not survive validation; refuse to run it. */
+  INVALID_RELEASE: "INVALID_RELEASE",
+  /** The release is fine, but it has no guide with that id. */
+  GUIDE_NOT_FOUND: "GUIDE_NOT_FOUND",
+  /** A site code the extension does not serve. */
+  BAD_SITE: "BAD_SITE",
   INTERNAL: "INTERNAL",
 };
 
@@ -62,7 +70,16 @@ export const ERROR_CODES = {
  * page, over externally_connectable. These arrive from our own content script and are
  * authorised differently — by the tab they come from, not by origin alone.
  */
-export const CONTENT_TYPES = ["tg:hello", "tg:step", "tg:navigated", "tg:probe-result", "tg:preview-step"];
+export const CONTENT_TYPES = [
+  "tg:hello",
+  "tg:step",
+  "tg:navigated",
+  "tg:probe-result",
+  "tg:preview-step",
+  "tg:start-tour",
+  "tg:tour-state",
+  "tg:tour-exit",
+];
 
 /** Messages the service worker pushes down to a content script. */
 export const CONTENT_COMMANDS = ["tg:disarm", "tg:session", "tg:probe"];

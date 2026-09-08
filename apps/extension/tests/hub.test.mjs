@@ -1,8 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 
+import * as SCHEMA from "../../../packages/guide-schema/src/index.ts";
 import { createHub } from "../src/hub.js";
 import { SESSION_ERRORS, createRecorderStore } from "../src/session.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * tour.js is a classic script the worker imports for its side effect. Loaded the same way
+ * here so the hub is driven by the REAL decision table — a stub would let the resume
+ * logic agree with whatever the test wanted.
+ */
+function loadTour() {
+  const ctx = vm.createContext({ console });
+  for (const f of ["../src/resolve.js", "../src/tour.js"]) {
+    vm.runInContext(readFileSync(resolve(HERE, f), "utf8"), ctx);
+  }
+  return ctx.TG_TOUR;
+}
+
+const TOUR = loadTour();
 
 /**
  * The worker's behaviour, driven with fakes.
@@ -658,4 +680,385 @@ test("recorder vẫn chạy bình thường trên build không có cấu hình �
   await hub.handlePort(START(), port);
   assert.equal(port.last().type, "READY");
   assert.equal(tabs.created.length, 1);
+});
+
+/* ======================= 3B: chạy guide thật từ cache =========================== */
+
+const SITE_ORIGINS = { pos: "https://pos.v2.circa.vn", admin: "https://admin.v2.circa.vn" };
+
+const liveStep = (over = {}) => ({
+  id: "st_1",
+  site: "pos",
+  selectors: ["#basic-button"],
+  matchText: "Cài Đặt",
+  tag: "button",
+  title: "Mở Cài Đặt",
+  content: "",
+  urlPattern: "/trang-chu",
+  navigationUrl: "/trang-chu",
+  action: { type: "click_next", expectedUrl: "", timeoutMs: 0 },
+  ...over,
+});
+
+const releaseGuide = (over = {}) => ({
+  id: "g1",
+  legacyId: null,
+  name: "BÁN HÀNG TẠI QUẦY",
+  site: "pos",
+  group: "Bán hàng",
+  sortOrder: 0,
+  start: { site: "pos", url: "/trang-chu" },
+  steps: [liveStep(), liveStep({ id: "st_2", urlPattern: "/don-hang", navigationUrl: "/don-hang" })],
+  ...over,
+});
+
+const releasePayload = (over = {}) => ({
+  schemaVersion: 5,
+  site: "pos",
+  revision: 3,
+  releasedAt: "2026-09-08T10:00:00.000Z",
+  checksum: "sha256:aaa",
+  sites: SITE_ORIGINS,
+  groups: ["Bán hàng"],
+  guides: [releaseGuide()],
+  ...over,
+});
+
+/** A sync stand-in whose cache the test can swap mid-tour. */
+function fakeReleaseCache(initial = { pos: releasePayload() }) {
+  const cache = { ...initial };
+  return {
+    cache,
+    async readCache(site) {
+      return cache[site] ?? null;
+    },
+    async status() {
+      const out = {};
+      for (const [site, payload] of Object.entries(cache)) {
+        out[site] = { site, state: "ok", revision: payload.revision, checksum: payload.checksum };
+      }
+      return out;
+    },
+    async syncAll() {
+      return { ok: true, sites: [] };
+    },
+  };
+}
+
+function liveHub(opts = {}) {
+  const storage = fakeStorage();
+  const store = createRecorderStore(storage);
+  const tabs = fakeTabs();
+  const sync = opts.sync ?? fakeReleaseCache();
+  let n = 0;
+  const hub = createHub({
+    store,
+    tabs,
+    sync,
+    schema: SCHEMA,
+    tour: TOUR,
+    targetOrigins: TARGETS,
+    info: { extVersion: "0.1.0", schemaVersion: 5 },
+    newId: () => `live_${++n}`,
+  });
+  return { hub, store, tabs, sync };
+}
+
+const loc = (pathname, origin = SITE_ORIGINS.pos) => ({ origin, pathname, search: "", hash: "" });
+const START_TOUR = (over = {}) => ({ type: "tg:start-tour", releaseSite: "pos", guideId: "g1", ...over });
+
+/* ------------------------------------------------------------------ khởi chạy */
+
+test("3B: tour bắt đầu từ cache và ghim luôn release nó chạy", async () => {
+  const { hub, store } = liveHub();
+  const reply = await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+
+  assert.equal(reply.ok, true);
+  const session = await store.findByTab(7);
+  assert.equal(session.kind, "live");
+  assert.equal(session.index, 0);
+  assert.equal(session.job.releaseRevision, 3);
+  assert.equal(session.job.releaseChecksum, "sha256:aaa");
+  assert.equal(session.job.guide.id, "g1");
+  assert.equal(session.job.guide.steps.length, 2, "snapshot guide đi cùng phiên");
+  assert.deepEqual({ ...session.job.sites }, SITE_ORIGINS);
+});
+
+test("3B: tabId lấy từ sender, không nhận theo lời khai của trang", async () => {
+  // Một trang tự khai tab của mình sẽ mở được tour trên tab của người khác.
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR({ tabId: 99 }), 7);
+
+  assert.ok(await store.findByTab(7), "phải gắn vào tab của sender");
+  assert.equal(await store.findByTab(99), null, "không được gắn vào tab tự khai");
+});
+
+test("3B: bản phát hành mới giữa tour không đụng tới tour đang chạy", async () => {
+  const { hub, store, sync } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+
+  // Đồng bộ đổi cache sang revision 9 với nội dung khác hẳn.
+  sync.cache.pos = releasePayload({
+    revision: 9,
+    checksum: "sha256:moi",
+    guides: [releaseGuide({ name: "BẢN MỚI", steps: [liveStep({ id: "khac" })] })],
+  });
+
+  const session = await store.findByTab(7);
+  assert.equal(session.job.releaseRevision, 3, "revision vẫn được ghim");
+  assert.equal(session.job.guide.name, "BÁN HÀNG TẠI QUẦY");
+  assert.equal(session.job.guide.steps.length, 2, "nội dung không bị đổi dưới chân người đang xem");
+});
+
+test("3B: hai tab chạy hai guide độc lập", async () => {
+  const { hub, store, sync } = liveHub({
+    sync: fakeReleaseCache({
+      pos: releasePayload({ guides: [releaseGuide(), releaseGuide({ id: "g2", name: "TRẢ HÀNG" })] }),
+    }),
+  });
+  assert.ok(sync);
+
+  await hub.handleContent("tg:start-tour", START_TOUR({ guideId: "g1" }), 7);
+  await hub.handleContent("tg:start-tour", START_TOUR({ guideId: "g2" }), 8);
+
+  const a = await store.findByTab(7);
+  const b = await store.findByTab(8);
+  assert.equal(a.job.guide.id, "g1");
+  assert.equal(b.job.guide.id, "g2");
+  assert.notEqual(a.id, b.id);
+
+  // Đi tiếp ở tab 7 không đụng tab 8.
+  await hub.handleContent("tg:tour-state", { index: 1, tour: { phase: "showing" } }, 7);
+  assert.equal((await store.findByTab(7)).index, 1);
+  assert.equal((await store.findByTab(8)).index, 0);
+});
+
+test("3B: một tab đang ghi/probe/chạy thử thì không mở được tour", async () => {
+  const { hub, tabs, store } = liveHub();
+  await hub.handlePort(START(), fakePort());
+  const recTab = tabs.created.at(-1).id;
+
+  await assert.rejects(
+    () => hub.handleContent("tg:start-tour", START_TOUR(), recTab),
+    (err) => {
+      assert.equal(err.code, SESSION_ERRORS.TAB_BUSY);
+      return true;
+    },
+  );
+  assert.equal((await store.findByTab(recTab)).kind, "record", "phiên ghi không bị chiếm mất");
+});
+
+test("3B: tour đang chạy thì tab đó không nhận thêm việc khác", async () => {
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  await assert.rejects(() => store.start({ id: "rec_x", guideId: "g", site: "pos", tabId: 7 }));
+});
+
+/* -------------------------------------------------------------- từ chối đúng chỗ */
+
+test("3B: chưa có cache thì không tạo phiên nào", async () => {
+  const { hub, store } = liveHub({ sync: fakeReleaseCache({}) });
+  const reply = await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+
+  assert.equal(reply.ok, false);
+  assert.equal(reply.error.code, "NO_RELEASE");
+  assert.equal(await store.findByTab(7), null);
+});
+
+test("3B: release hỏng thì từ chối chạy, và cache KHÔNG bị xoá", async () => {
+  const broken = releasePayload({ guides: [releaseGuide({ steps: [{ id: "x" }] })] });
+  const sync = fakeReleaseCache({ pos: broken });
+  const { hub, store } = liveHub({ sync });
+
+  const reply = await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  assert.equal(reply.ok, false);
+  assert.equal(reply.error.code, "INVALID_RELEASE");
+  assert.equal(await store.findByTab(7), null);
+  assert.equal(sync.cache.pos, broken, "runtime lỗi không được đụng vào cache");
+});
+
+test("3B: guide không có trong bản phát hành thì báo rõ", async () => {
+  const { hub } = liveHub();
+  const reply = await hub.handleContent("tg:start-tour", START_TOUR({ guideId: "khong-co" }), 7);
+  assert.equal(reply.error.code, "GUIDE_NOT_FOUND");
+});
+
+test("3B: site lạ bị từ chối trước cả khi đọc cache", async () => {
+  const { hub } = liveHub();
+  const reply = await hub.handleContent("tg:start-tour", START_TOUR({ releaseSite: "khac" }), 7);
+  assert.equal(reply.error.code, "BAD_SITE");
+});
+
+test("3B: cache lệch với trạng thái đồng bộ thì không chạy", async () => {
+  const sync = fakeReleaseCache();
+  sync.status = async () => ({ pos: { site: "pos", state: "ok", revision: 9, checksum: "sha256:khac" } });
+  const { hub } = liveHub({ sync });
+
+  const reply = await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  assert.equal(reply.error.code, "INVALID_RELEASE");
+});
+
+/* ------------------------------------------------------- điều hướng và khôi phục */
+
+test("3B: tới đúng trang thì tour tự sang bước kế, và pending được xoá", async () => {
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  await hub.handleContent(
+    "tg:tour-state",
+    { tour: { phase: "waiting_url", pending: { fromIndex: 0, nextIndex: 1, expectedSite: "pos", expectedUrl: "/don-hang" } } },
+    7,
+  );
+
+  const reply = await hub.handleContent("tg:hello", { loc: loc("/don-hang") }, 7);
+
+  assert.equal(reply.data.job.index, 1, "đã tới nơi thì sang bước kế");
+  assert.equal(reply.data.job.tour.pending, null);
+  assert.equal(reply.data.job.tour.navGuard, null);
+  assert.equal((await store.findByTab(7)).index, 1, "và được ghi lại, không chỉ trả về");
+});
+
+test("3B: chưa tới nơi thì tour đứng yên chờ", async () => {
+  const { hub } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  await hub.handleContent(
+    "tg:tour-state",
+    { tour: { phase: "waiting_url", pending: { fromIndex: 0, nextIndex: 1, expectedSite: "pos", expectedUrl: "/don-hang" } } },
+    7,
+  );
+
+  const reply = await hub.handleContent("tg:hello", { loc: loc("/dang-nhap") }, 7);
+  assert.equal(reply.data.job.index, 0);
+  assert.ok(reply.data.job.tour.pending, "pending còn nguyên để chờ tiếp");
+});
+
+test("3B: POS sang Admin trong cùng tab vẫn là một tour", async () => {
+  const crossing = releasePayload({
+    guides: [
+      releaseGuide({
+        steps: [
+          liveStep({ action: { type: "click_wait_url", expectedUrl: "", timeoutMs: 0, expectedSiteOverride: "admin" } }),
+          liveStep({ id: "st_2", site: "admin", urlPattern: "/quan-tri", navigationUrl: "/quan-tri" }),
+        ],
+      }),
+    ],
+  });
+  const { hub, store } = liveHub({ sync: fakeReleaseCache({ pos: crossing }) });
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  await hub.handleContent(
+    "tg:tour-state",
+    { tour: { phase: "waiting_url", pending: { fromIndex: 0, nextIndex: 1, expectedSite: "admin", expectedUrl: "/quan-tri" } } },
+    7,
+  );
+
+  // Cùng tabId, origin khác.
+  const reply = await hub.handleContent("tg:hello", { loc: loc("/quan-tri", SITE_ORIGINS.admin) }, 7);
+
+  assert.equal(reply.data.job.index, 1, "đổi origin không làm mất tour");
+  assert.equal(reply.data.job.id, (await store.findByTab(7)).id, "vẫn đúng phiên đó");
+});
+
+test("3B: reload trang không mất tiến độ", async () => {
+  const { hub } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  await hub.handleContent("tg:tour-state", { index: 1, tour: { phase: "showing" } }, 7);
+
+  // Trang tải lại: content script mới bắt tay lại từ đầu.
+  const reply = await hub.handleContent("tg:hello", { loc: loc("/don-hang") }, 7);
+  assert.equal(reply.data.job.index, 1);
+  assert.equal(reply.data.job.job.guide.id, "g1");
+});
+
+/* --------------------------------------------------------------- giữ chặt ghim */
+
+test("3B: tour không được sửa release đã ghim", async () => {
+  // Một tour mất ghim giữa chừng sẽ bắt đầu đi theo bản phát hành mà người dùng không chọn.
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  const session = await store.findByTab(7);
+
+  await assert.rejects(
+    () => store.setTour(session.id, { job: { guide: { steps: [] } } }, 7),
+    (err) => {
+      assert.equal(err.code, SESSION_ERRORS.INVALID_SESSION);
+      return true;
+    },
+  );
+  assert.equal((await store.findByTab(7)).job.releaseRevision, 3);
+});
+
+test("3B: bước của tour chỉ nhận từ đúng tab của nó", async () => {
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  const session = await store.findByTab(7);
+
+  await assert.rejects(
+    () => store.setTour(session.id, { index: 1 }, 9),
+    (err) => {
+      assert.equal(err.code, SESSION_ERRORS.TAB_MISMATCH);
+      return true;
+    },
+  );
+  assert.equal((await store.findByTab(7)).index, 0);
+});
+
+/* ------------------------------------------------------------------- kết thúc */
+
+test("3B: thoát tour dọn sạch phiên, tab dùng lại được ngay", async () => {
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+
+  const reply = await hub.handleContent("tg:tour-exit", {}, 7);
+  assert.equal(reply.data.stopped, true);
+  assert.equal(await store.findByTab(7), null, "không để lại phiên done chiếm tab");
+
+  // Và tab mở được tour mới ngay.
+  const again = await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  assert.equal(again.ok, true);
+});
+
+test("3B: đóng tab đang chạy tour thì dọn phiên", async () => {
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  await hub.onTabRemoved(7);
+  assert.equal(await store.findByTab(7), null);
+});
+
+test("3B: thoát khi không có tour nào là vô hại", async () => {
+  const { hub } = liveHub();
+  const reply = await hub.handleContent("tg:tour-exit", {}, 7);
+  assert.equal(reply.data.stopped, false);
+});
+
+test("3B: HELLO khai thêm capability live khi build có đủ cấu hình", async () => {
+  const { hub } = liveHub();
+  const reply = await hub.handleOneShot({ type: "HELLO", payload: {} });
+  assert.ok([...reply.data.capabilities].includes("live"));
+});
+
+test("3B: service worker khởi động lại vẫn tìm thấy tour đang chạy", async () => {
+  // Phiên nằm ở chrome.storage.session, không phải trong bộ nhớ worker — đó là lý do một
+  // lần worker bị thu hồi không làm mất tiến độ của người đang theo hướng dẫn.
+  const storage = fakeStorage();
+  const store = createRecorderStore(storage);
+  const common = {
+    tabs: fakeTabs(),
+    sync: fakeReleaseCache(),
+    schema: SCHEMA,
+    tour: TOUR,
+    targetOrigins: TARGETS,
+    info: { extVersion: "0.1.0", schemaVersion: 5 },
+    newId: () => "live_1",
+  };
+
+  const before = createHub({ store, ...common });
+  await before.handleContent("tg:start-tour", START_TOUR(), 7);
+  await before.handleContent("tg:tour-state", { index: 1, tour: { phase: "showing" } }, 7);
+
+  // Worker bị thu hồi: hub mới, store mới, cùng một storage.
+  const after = createHub({ store: createRecorderStore(storage), ...common });
+  const reply = await after.handleContent("tg:hello", { loc: loc("/don-hang") }, 7);
+
+  assert.equal(reply.data.job.kind, "live");
+  assert.equal(reply.data.job.index, 1, "vẫn đúng bước đang dở");
+  assert.equal(reply.data.job.job.releaseRevision, 3, "và vẫn giữ nguyên ghim");
 });

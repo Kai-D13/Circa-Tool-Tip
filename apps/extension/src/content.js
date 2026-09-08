@@ -33,6 +33,7 @@
 
   const PICK = globalThis.TG_SELECTOR;
   const RESOLVE = globalThis.TG_RESOLVE;
+  const TOUR = globalThis.TG_TOUR;
   const OVERLAY = globalThis.TG_OVERLAY;
   const SCHEMA = globalThis.GUIDE_SCHEMA;
 
@@ -45,6 +46,9 @@
   let ui = null;
   let watcher = null;
   let lastUrl = location.href;
+  /** Live tour only: DOM observer and its timeout, while waiting for a step's element. */
+  let observer = null;
+  let observerTimer = null;
 
   const send = (message) => chrome.runtime.sendMessage(message);
 
@@ -82,7 +86,7 @@
   async function handshake(attempt) {
     let reply;
     try {
-      reply = await send({ type: "tg:hello" });
+      reply = await send({ type: "tg:hello", loc: locationParts() });
     } catch (err) {
       // The worker was asleep or the extension was reloaded mid-navigation. Not fatal.
       console.debug("[tooltip] handshake chưa tới được background:", err?.message ?? err);
@@ -165,12 +169,23 @@
       reportNavigation();
     }
 
+    if (job.kind === "live") {
+      // Faster than the recorder's poll because a tour ACTS on arriving somewhere: the
+      // person is waiting for the next step to appear, not for a status line. Catches
+      // pushState, replaceState and popstate alike, which no single event does.
+      lastUrl = location.href;
+      watcher = setInterval(checkUrl, 350);
+      window.addEventListener("pagehide", disarm);
+    }
+
     render();
   }
 
   function disarm() {
     if (!job) return;
     job = null;
+    stopWatching();
+    window.removeEventListener("pagehide", disarm);
     document.removeEventListener("click", onClick, true);
     document.removeEventListener("mouseover", onHover, true);
     document.removeEventListener("scroll", onScroll, true);
@@ -189,7 +204,25 @@
     if (location.href === lastUrl) return;
     lastUrl = location.href;
     onScroll();
+    if (job?.kind === "live") {
+      // Ask the worker where we are now. It owns the decision: it holds `pending` and the
+      // shared matcher, and it is the only place allowed to move the tour forward.
+      void resync();
+      return;
+    }
     reportNavigation();
+  }
+
+  async function resync() {
+    stopWatching();
+    const reply = await send({ type: "tg:hello", loc: locationParts() }).catch(() => null);
+    if (!reply?.ok) return;
+    if (!reply.data.job) {
+      disarm();
+      return;
+    }
+    job = reply.data.job;
+    render();
   }
 
   function reportNavigation() {
@@ -202,6 +235,7 @@
     if (job.kind === "record") return renderRecorder();
     if (job.kind === "probe") return renderProbe();
     if (job.kind === "preview") return renderPreview();
+    if (job.kind === "live") return renderLive();
   }
 
   /* ------------------------------------------------------------------- recorder */
@@ -509,5 +543,281 @@
     const id = job?.id;
     disarm();
     if (id) await send({ type: "tg:preview-step", sessionId: id, exit: true }).catch(() => {});
+  }
+
+  /* ------------------------------------------------------------------ live tour */
+
+  /**
+   * Running a released guide.
+   *
+   * Every decision — what an action means, whether an element may be pressed, whether the
+   * browser has arrived — comes from TG_TOUR and TG_RESOLVE. What lives here is the DOM
+   * work and the order of operations, and the order is the part that matters: anything
+   * that might navigate persists its state through the worker FIRST, because the page is
+   * about to be thrown away.
+   */
+
+  /** The shape TG_TOUR reads a tour from. */
+  function liveView() {
+    const pinned = job.job ?? {};
+    const state = job.tour ?? {};
+    return {
+      guide: pinned.guide,
+      sites: pinned.sites,
+      pending: state.pending ?? null,
+      navGuard: state.navGuard ?? null,
+    };
+  }
+
+  function liveSteps() {
+    return job.job?.guide?.steps ?? [];
+  }
+
+  function liveIndex() {
+    return Math.min(Math.max(job.index || 0, 0), Math.max(liveSteps().length - 1, 0));
+  }
+
+  /** The two questions the auto-click gate asks about an element. */
+  function gateApi() {
+    return {
+      isVisible: (el) => {
+        if (!el || typeof el.getBoundingClientRect !== "function") return false;
+        const r = el.getBoundingClientRect();
+        return !!(r.width || r.height);
+      },
+      isEnabled: (el) => el?.disabled !== true && el?.getAttribute?.("aria-disabled") !== "true",
+    };
+  }
+
+  function stopWatching() {
+    if (watcher) clearInterval(watcher);
+    watcher = null;
+    stopObserver();
+  }
+
+  function stopObserver() {
+    if (observer) observer.disconnect();
+    observer = null;
+    if (observerTimer) clearTimeout(observerTimer);
+    observerTimer = null;
+  }
+
+  /** Persist through the worker, then adopt what it wrote. Returns false on refusal. */
+  async function saveTour(patch) {
+    const reply = await send({ type: "tg:tour-state", ...patch }).catch(() => null);
+    if (!reply?.ok) return false;
+    job = reply.data.job;
+    return true;
+  }
+
+  const NAV_ACTIONS = [
+    { id: "retry", label: "Thử lại" },
+    { id: "exit", label: "Thoát" },
+  ];
+
+  function liveMeta(index) {
+    const guide = job.job?.guide;
+    return `Bước ${index + 1}/${liveSteps().length}${guide?.name ? " · " + guide.name : ""}`;
+  }
+
+  function navActions(index) {
+    return [
+      { id: "prev", label: "Quay lại", disabled: index === 0 },
+      { id: "next", label: TOUR.isLastStep(liveView(), index) ? "Hoàn tất" : "Tiếp", primary: true },
+      { id: "exit", label: "Thoát" },
+    ];
+  }
+
+  function renderLive() {
+    const steps = liveSteps();
+    if (!steps.length) return void exitTour();
+
+    const index = liveIndex();
+    const step = steps[index];
+    stopObserver();
+
+    // 1. Is this even the right page? The worker resolved `pending` before we got here,
+    //    so anything still not matching is a step we have to travel to.
+    const decision = TOUR.navigationDecision(liveView(), index, locationParts(), SCHEMA);
+    if (decision.action === "navigate") return void travelTo(decision.url);
+    if (decision.action === "wait") return renderWaiting(index, decision.reason);
+    if (decision.action === "stall") return renderStalled(index, decision.reason);
+
+    // 2. Can this step be acted on at all?
+    const target = RESOLVE.resolveTarget(step, domApi());
+    const readiness = TOUR.stepReadiness(step, target, gateApi());
+    if (!readiness.ok) return watchForTarget(step, index, readiness.reason);
+
+    // 3. Show it.
+    if (target?.element) {
+      scrollTo(target.element);
+      ui.highlight(target.element, "ok");
+    } else {
+      ui.hideBox();
+    }
+
+    const behaviour = TOUR.behaviourOf(step.action?.type);
+    ui.showCard(
+      {
+        title: step.title || "(bước chưa có tiêu đề)",
+        meta: liveMeta(index),
+        body: step.content || "",
+        note: behaviour.auto ? "Bước này extension tự thao tác." : "",
+        noteTone: "good",
+        actions: navActions(index),
+      },
+      onLiveAction,
+    );
+
+    // 4. An auto step acts by itself — once. `executedStepId` is written through the
+    //    worker before the click, so a re-render or a repeated event cannot fire a second.
+    if (behaviour.auto) void runAuto(step, index, target);
+  }
+
+  function renderWaiting(index, reason) {
+    ui.hideBox();
+    ui.showCard(
+      {
+        title: "Đang chờ trang",
+        meta: liveMeta(index),
+        body: reason,
+        note: "Nếu đang ở màn hình đăng nhập, hãy đăng nhập rồi bấm Thử lại.",
+        noteTone: "bad",
+        actions: [{ id: "retry", label: "Thử lại", primary: true }, { id: "wait", label: "Chờ thêm" }, { id: "exit", label: "Thoát" }],
+      },
+      onLiveAction,
+    );
+  }
+
+  function renderStalled(index, reason) {
+    ui.hideBox();
+    ui.showCard(
+      { title: "Không mở được trang của bước", meta: liveMeta(index), body: reason, noteTone: "bad", actions: NAV_ACTIONS },
+      onLiveAction,
+    );
+  }
+
+  /**
+   * Wait for the element, re-asking the SAME question each time.
+   *
+   * Not "has the selector appeared": a selector can match an element that is hidden, or
+   * whose text has changed underneath the guide. The observer re-runs the full resolver
+   * and the full readiness gate, so what wakes the tour up is a target it is actually
+   * allowed to act on.
+   */
+  function watchForTarget(step, index, reason) {
+    ui.hideBox();
+    ui.showCard(
+      {
+        title: step.title || "(bước chưa có tiêu đề)",
+        meta: liveMeta(index),
+        body: step.content || "",
+        note: `Đang tìm thành phần… ${reason}`,
+        noteTone: "bad",
+        actions: [{ id: "retry", label: "Thử lại", primary: true }].concat(navActions(index)),
+      },
+      onLiveAction,
+    );
+
+    const ready = () => TOUR.stepReadiness(step, RESOLVE.resolveTarget(step, domApi()), gateApi()).ok;
+    observer = new MutationObserver(() => {
+      if (!ready()) return;
+      stopObserver();
+      render();
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+
+    const timeoutMs = Number(step.action?.timeoutMs) || SCHEMA.WAIT_ELEMENT_TIMEOUT_MS;
+    observerTimer = setTimeout(() => {
+      stopObserver();
+      if (job?.kind === "live") renderStalled(index, `Chờ quá lâu mà chưa thấy thành phần. ${reason}`);
+    }, timeoutMs);
+  }
+
+  /** Remember where we are sending the browser, so a failed arrival cannot loop. */
+  async function travelTo(url) {
+    const saved = await saveTour({
+      tour: { ...(job.tour ?? {}), navGuard: { url, createdAt: new Date().toISOString() }, phase: "waiting_url" },
+    });
+    if (!saved) return void disarm();
+    location.href = url;
+  }
+
+  async function runAuto(step, index, target) {
+    const state = job.tour ?? {};
+    if (state.executedStepId === step.id) return; // already fired for this step
+    const behaviour = TOUR.behaviourOf(step.action?.type);
+
+    const next = { ...state, executedStepId: step.id, phase: behaviour.waitsUrl ? "waiting_url" : "showing" };
+    if (behaviour.waitsUrl) next.pending = TOUR.pendingFor(liveView(), index, SCHEMA);
+
+    // Written BEFORE the click, and awaited. A click that navigates destroys this page;
+    // a pending written afterwards would be a pending that never existed.
+    if (!(await saveTour({ tour: next }))) return void renderStalled(index, "Không lưu được trạng thái bước.");
+
+    try {
+      target.element.click();
+    } catch (err) {
+      // A failed click must not advance the tour: the person would be shown the step
+      // after one that never happened.
+      return void renderStalled(index, `Không bấm được phần tử: ${err?.message ?? err}`);
+    }
+
+    if (!behaviour.waitsUrl) await goToLiveStep(index + 1);
+  }
+
+  /** The user pressed Tiếp on a step the runtime clicks for them. */
+  async function advanceWithClick(step, index) {
+    const behaviour = TOUR.behaviourOf(step.action?.type);
+    const target = RESOLVE.resolveTarget(step, domApi());
+    if (!TOUR.stepReadiness(step, target, gateApi()).ok) {
+      return void renderStalled(index, "Không tìm thấy phần tử để bấm.");
+    }
+
+    const state = job.tour ?? {};
+    const next = { ...state, executedStepId: step.id };
+    if (behaviour.waitsUrl) next.pending = TOUR.pendingFor(liveView(), index, SCHEMA);
+    if (!(await saveTour({ tour: next }))) return void renderStalled(index, "Không lưu được trạng thái bước.");
+
+    try {
+      target.element.click();
+    } catch (err) {
+      return void renderStalled(index, `Không bấm được phần tử: ${err?.message ?? err}`);
+    }
+
+    if (!behaviour.waitsUrl) await goToLiveStep(index + 1);
+  }
+
+  async function goToLiveStep(index) {
+    if (index < 0) return;
+    if (index >= liveSteps().length) return exitTour();
+    const saved = await saveTour({
+      index,
+      tour: { phase: "showing", pending: null, navGuard: null, executedStepId: null },
+    });
+    if (!saved) return void disarm();
+    render();
+  }
+
+  async function exitTour() {
+    disarm();
+    await send({ type: "tg:tour-exit" }).catch(() => {});
+  }
+
+  function onLiveAction(id) {
+    if (!job || job.kind !== "live") return;
+    const index = liveIndex();
+    const step = liveSteps()[index];
+
+    if (id === "exit") return void exitTour();
+    if (id === "retry" || id === "wait") {
+      stopObserver();
+      return void render();
+    }
+    if (id === "prev") return void goToLiveStep(index - 1);
+
+    // Tiếp: a step the runtime clicks needs the click to happen first.
+    if (TOUR.behaviourOf(step?.action?.type).clicks) return void advanceWithClick(step, index);
+    return void goToLiveStep(index + 1);
   }
 })();

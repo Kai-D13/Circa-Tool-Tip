@@ -20,7 +20,7 @@ Google Apps Script). **Không sửa repo cũ** — nó vẫn đang chạy produc
 | 2B.2C | Probe selector + preview draft | Xong — QA pass ([`docs/QA_LOCALHOST_2B2C.md`](docs/QA_LOCALHOST_2B2C.md)) |
 | 2B.3 | Portal phát hành: publish / rollback theo site | Xong — [`docs/QA_LOCALHOST_2B3.md`](docs/QA_LOCALHOST_2B3.md) |
 | 3A | Extension đồng bộ release + cache 15 phút | Code xong, chờ QA — [`docs/QA_LOCALHOST_3A.md`](docs/QA_LOCALHOST_3A.md) |
-| 3B | Runtime chạy guide thật trên POS/Admin | Chưa bắt đầu |
+| 3B | Runtime chạy guide thật trên POS/Admin | Code xong — audit bằng automated test |
 | 3C | Tab Tool-tip + menu hướng dẫn (UI adapter POS/Admin) | Chưa bắt đầu |
 | 3D | Integration + đóng gói | Chưa bắt đầu |
 | 4 | QA 2 pha + Chrome Web Store Unlisted | Chưa bắt đầu |

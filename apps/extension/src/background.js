@@ -8,6 +8,11 @@
  */
 
 import "./vendor/guide-schema.global.js";
+// Classic scripts, imported for their side effect exactly like the schema bundle. The
+// worker needs the SAME decision table the page uses: it is what decides whether a tour
+// has arrived where it was heading, and a second copy here would be a second answer.
+import "./resolve.js";
+import "./tour.js";
 import {
   ERROR_CODES,
   ONE_SHOT_TYPES,
@@ -108,6 +113,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 const hub = createHub({
   store,
   sync,
+  schema: globalThis.GUIDE_SCHEMA,
+  tour: globalThis.TG_TOUR,
   tabs: {
     create: (options) => chrome.tabs.create(options),
     remove: (tabId) => chrome.tabs.remove(tabId),

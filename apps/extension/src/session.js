@@ -114,6 +114,7 @@ export function createRecorderStore(storage) {
       stepId = null,
       kind = "record",
       job = null,
+      tour = null,
     }) {
       // A malformed payload is not "this session already exists" — the Portal needs to
       // tell the two apart to know whether retrying could ever help.
@@ -141,10 +142,16 @@ export function createRecorderStore(storage) {
           mode,
           stepId,
           // "record" captures clicks, "probe" checks one step's selectors, "preview" walks
-          // a draft guide. All three own a tab exclusively, which is why they share this
-          // store rather than each growing their own copy of the tab invariant.
+          // a draft guide, "live" runs a released one. All four own a tab exclusively,
+          // which is why they share this store rather than each growing their own copy of
+          // the tab invariant.
           kind,
+          // Immutable for the life of the job. For a live tour this is the pinned release:
+          // the guide snapshot, the site origins, and the revision + checksum it came
+          // from. A sync that lands mid-tour changes the cache, never this.
           job,
+          /** Mutable runtime state of a live tour: phase, pending, navGuard. */
+          tour,
           // `status` means ACTIVE, whatever the kind — "recording" is kept as the value so
           // an existing session in storage stays readable across an extension reload.
           status: "recording",
@@ -222,6 +229,42 @@ export function createRecorderStore(storage) {
           throw new SessionError(SESSION_ERRORS.INVALID_SESSION, `Chỉ số bước không hợp lệ: ${String(index)}`);
         }
         return write({ ...s, index });
+      });
+    },
+
+    /**
+     * Advance or re-phase a live tour.
+     *
+     * Only `index` and `tour` may move. Everything else — above all `job`, which holds
+     * the pinned guide and revision — is refused rather than quietly overwritten: a tour
+     * that lost its pin mid-run would start following a release the person never chose.
+     */
+    async setTour(sessionId, patch, fromTabId) {
+      return enqueue(async () => {
+        const s = await read(sessionId);
+        if (!s || s.status !== "recording") return null;
+        if (s.kind !== "live") {
+          throw new SessionError(SESSION_ERRORS.INVALID_SESSION, `Phiên "${sessionId}" không phải tour đang chạy.`);
+        }
+        if (fromTabId !== undefined && s.tabId !== fromTabId) {
+          throw new SessionError(
+            SESSION_ERRORS.TAB_MISMATCH,
+            `Tour "${sessionId}" đang ở tab ${s.tabId}, không phải tab ${fromTabId}.`,
+          );
+        }
+
+        const next = { ...s };
+        for (const key of Object.keys(patch)) {
+          if (key !== "index" && key !== "tour") {
+            throw new SessionError(SESSION_ERRORS.INVALID_SESSION, `Tour không được sửa trường "${key}".`);
+          }
+          next[key] = patch[key];
+        }
+        if (patch.index !== undefined && (typeof patch.index !== "number" || !Number.isInteger(patch.index) || patch.index < 0)) {
+          throw new SessionError(SESSION_ERRORS.INVALID_SESSION, `Chỉ số bước không hợp lệ: ${String(patch.index)}`);
+        }
+        next.updatedAt = new Date().toISOString();
+        return write(next);
       });
     },
 

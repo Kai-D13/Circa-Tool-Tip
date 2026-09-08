@@ -27,6 +27,7 @@
         "vendor/guide-schema.global.js",
         "selector.js",
         "resolve.js",
+        "tour.js",
         "overlay.js",
         "content.js"
       ],
