@@ -165,6 +165,11 @@ function loadContent({
 
     const liveTimers = () => timers.filter((t) => t.live).length;
 
+    /** One watcher tick with the URL exactly where it was. */
+    function pump() {
+      for (const entry of timers) if (entry.live) entry.fn();
+    }
+
     // Taken from the built manifest, not from a list here: Chrome loads exactly these, in
     // exactly this order, and a hardcoded copy would silently stop matching the moment a
     // script is added.
@@ -181,6 +186,7 @@ function loadContent({
       observers,
       spaNavigate,
       liveTimers,
+      pump,
       releaseClaim: () => releaseClaim(),
       helloCount: () => helloCalls,
       setJob: (next) => (current = next),
@@ -828,9 +834,9 @@ test("3B: auto_click_wait_url ghi pending trước, tự bấm, rồi đứng ch
   const clickedAt = log.findIndex((e) => e.kind === "click");
   assert.ok(savedAt >= 0 && savedAt < clickedAt, "pending trước, click sau");
   assert.equal(el.clicks, 1);
-  // Vẫn đứng ở bước 1 chờ URL, và nói rõ đây là bước extension tự làm.
+  // Vẫn đứng ở bước 1, và thẻ chuyển sang trạng thái chờ chuyển trang.
   assert.match(cardText(document, ".meta"), /^Bước 1\/2/);
-  assert.match(cardText(document, ".note"), /tự thao tác/);
+  assert.equal(cardText(document, ".title"), "Đang mở bước tiếp theo…");
 });
 
 test("3B: bước cuối là auto-click thì vẫn bấm rồi mới kết thúc", async () => {
@@ -1291,4 +1297,239 @@ test("P1: click_next không bấm phần tử đang ẩn", async () => {
   await tick();
   assert.equal(el.clicks, 0);
   assert.match(cardText(document, ".note"), /Đang tìm thành phần/);
+});
+
+/* ========== 3B.1.1: resync phải tự thử lại kể cả khi URL đứng yên ============== */
+
+test("P0: resync lỗi thì tick sau tự thử lại, KHÔNG cần URL đổi thêm lần nào", async () => {
+  // Lỗi cũ: checkUrl cập nhật lastUrl trước khi resync, nên sau một lần thất bại URL
+  // hiện tại đã bằng lastUrl và không bao giờ gọi lại. Trong thực tế URL đứng yên, và
+  // tour kẹt cho tới hết ca.
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const steps = [liveStep(), liveStep({ id: "st_2", urlPattern: "/don-hang", title: "Bước hai" })];
+  const run = loadContent({
+    job: liveJob(steps),
+    matches: { "#basic-button": [el] },
+    log,
+    failHelloCalls: [2], // lần resync đầu tiên
+  });
+  await tick();
+
+  run.spaNavigate("https://pos.v2.circa.vn/don-hang");
+  await tick();
+  const afterFailure = run.helloCount();
+  assert.equal(cardText(run.document, ".meta").startsWith("Bước 1/2"), true, "vẫn kẹt ở bước cũ");
+
+  // URL KHÔNG đổi nữa. Chỉ là các tick tiếp theo của watcher.
+  run.setJob(liveJob(steps, { index: 1 }));
+  run.pump();
+  await tick();
+
+  assert.ok(run.helloCount() > afterFailure, "phải tự hỏi lại dù URL đứng yên");
+  assert.equal(cardText(run.document, ".title"), "Bước hai");
+});
+
+test("P0: resync thất bại nhiều lần thì giãn dần, không hỏi mỗi tick", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const run = loadContent({
+    job: liveJob([liveStep(), liveStep({ id: "st_2", urlPattern: "/don-hang" })]),
+    matches: { "#basic-button": [el] },
+    log,
+    failHelloCalls: [2, 3, 4, 5, 6, 7, 8, 9, 10],
+  });
+  await tick();
+
+  run.spaNavigate("https://pos.v2.circa.vn/don-hang");
+  await tick();
+  const afterFirst = run.helloCount();
+
+  // Sáu tick nữa: nếu hỏi mỗi tick sẽ là +6.
+  for (let i = 0; i < 6; i += 1) {
+    run.pump();
+    await tick();
+  }
+  const asked = run.helloCount() - afterFirst;
+  assert.ok(asked >= 1, "vẫn phải thử lại");
+  assert.ok(asked < 6, `phải giãn dần, đã hỏi ${asked} lần trong 6 tick`);
+});
+
+test("P0: resync thành công thì thôi hỏi lại", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const steps = [liveStep(), liveStep({ id: "st_2", urlPattern: "/don-hang" })];
+  const run = loadContent({ job: liveJob(steps), matches: { "#basic-button": [el] }, log });
+  await tick();
+
+  run.setJob(liveJob(steps, { index: 1 }));
+  run.spaNavigate("https://pos.v2.circa.vn/don-hang");
+  await tick();
+  const afterSuccess = run.helloCount();
+
+  for (let i = 0; i < 5; i += 1) {
+    run.pump();
+    await tick();
+  }
+  assert.equal(run.helloCount(), afterSuccess, "xong rồi thì không hỏi nữa");
+});
+
+/* ========== 3B.1.1: thao tác cũ không được đáp xuống một tour đã đổi ========== */
+
+test("P0: Thoát trong lúc claim đang chờ thì tuyệt đối không bấm phần tử", async () => {
+  // Claim là một round trip thật. Người dùng bấm Thoát bên trong khoảng đó, và một cú
+  // click đến sau đó là click lên một tour họ đã rời khỏi.
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const run = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "click_next", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+    holdClaim: true,
+  });
+  await tick();
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+  pressCard(run.document, "Thoát");
+  await tick();
+
+  run.releaseClaim();
+  await tick();
+  await tick();
+
+  assert.equal(el.clicks, 0, "đã thoát thì không được bấm");
+  assert.equal(run.document.body.children.length, 0, "overlay không được sống lại");
+  assert.ok(sentOfType(run.sent, "tg:tour-release").length > 0, "claim phải được trả lại");
+});
+
+test("P0: callback cũ không được gán lại job sau khi đã thoát", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const run = loadContent({
+    job: liveJob([liveStep({ action: { type: "click_next", expectedUrl: "", timeoutMs: 20 } }), liveStep({ id: "st_2" })]),
+    matches: { "#basic-button": [el] },
+    log,
+    holdClaim: true,
+  });
+  await tick();
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+  pressCard(run.document, "Thoát");
+  await tick();
+  run.releaseClaim();
+  await tick();
+  await tick();
+
+  // Không có tour nào nữa: một tick của watcher cũng không được làm nó hiện lại.
+  run.pump();
+  await tick();
+  assert.equal(run.document.body.children.length, 0);
+});
+
+test("P0: Quay lại trong lúc claim đang chờ không đổi bước và không bấm bước cũ", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const run = loadContent({
+    job: liveJob(
+      [
+        liveStep(),
+        liveStep({ id: "st_2", action: { type: "click_next", expectedUrl: "", timeoutMs: 20 } }),
+        liveStep({ id: "st_3" }),
+      ],
+      { index: 1 },
+    ),
+    matches: { "#basic-button": [el] },
+    log,
+    holdClaim: true,
+  });
+  await tick();
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+  pressCard(run.document, "Quay lại");
+  await tick();
+
+  assert.equal(advancedTo(run.sent).length, 0, "đang bấm thì Quay lại phải bị chặn");
+
+  run.releaseClaim();
+  await tick();
+  await tick();
+  assert.equal(el.clicks, 1, "cú bấm đã được cấp phép vẫn hoàn tất đúng một lần");
+});
+
+test("P0: đang chờ chuyển trang thì Tiếp/Quay lại/Thử lại không đụng được gì", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const run = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "click_wait_url", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2", urlPattern: "/don-hang" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+
+  assert.equal(el.clicks, 1);
+  assert.equal(cardText(run.document, ".title"), "Đang mở bước tiếp theo…");
+  const labels = cardButtons(run.document).map((b) => b.textContent);
+  assert.deepEqual(labels, ["Thoát"], "chỉ còn đường thoát");
+
+  const before = run.sent.length;
+  run.pump();
+  await tick();
+  assert.equal(el.clicks, 1, "không có cú bấm thứ hai");
+  assert.ok(run.sent.length >= before);
+});
+
+test("P0: đang chờ chuyển trang vẫn thoát được", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const run = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "click_wait_url", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2", urlPattern: "/don-hang" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+  pressCard(run.document, "Thoát");
+  await tick();
+
+  assert.equal(run.document.body.children.length, 0);
+  assert.ok(sentOfType(run.sent, "tg:tour-exit").length > 0);
+});
+
+test("P0: click_wait_url đã claim thì bấm Tiếp lần nữa cũng chỉ một cú bấm", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const run = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "click_wait_url", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2", urlPattern: "/don-hang" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+  });
+  await tick();
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+  // Thẻ giờ chỉ còn Thoát, nhưng cứ giả sử một sự kiện cũ vẫn gọi tới.
+  run.pump();
+  await tick();
+
+  assert.equal(el.clicks, 1);
 });

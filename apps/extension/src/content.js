@@ -59,6 +59,21 @@
   let liveBusy = false;
   /** One in-flight resync at a time; the URL watcher ticks faster than a round trip. */
   let resyncInFlight = false;
+  /**
+   * The tour has moved and the worker has not confirmed where to yet.
+   *
+   * Kept as a flag rather than inferred from the URL: after a failed handshake the URL
+   * does not change again, so "resync when the URL moves" would never fire a second time
+   * and the tour would sit there for the rest of the shift.
+   */
+  let needsResync = false;
+  let resyncFailures = 0;
+  let resyncSkipTicks = 0;
+  /**
+   * Bumped whenever the tour changes underneath an in-flight operation — arm, disarm, or
+   * a step change. A click that was authorised for generation N must not land in N+1.
+   */
+  let liveGeneration = 0;
 
   const send = (message) => chrome.runtime.sendMessage(message);
 
@@ -184,6 +199,10 @@
       // person is waiting for the next step to appear, not for a status line. Catches
       // pushState, replaceState and popstate alike, which no single event does.
       lastUrl = location.href;
+      liveGeneration += 1;
+      needsResync = false;
+      resyncFailures = 0;
+      resyncSkipTicks = 0;
       watcher = setInterval(checkUrl, 350);
       window.addEventListener("pagehide", disarm);
     }
@@ -194,8 +213,11 @@
   function disarm() {
     if (!job) return;
     job = null;
+    // Anything already in flight now belongs to a tour that no longer exists.
+    liveGeneration += 1;
     liveBusy = false;
     resyncInFlight = false;
+    needsResync = false;
     stopAllRuntimeWork();
     window.removeEventListener("pagehide", disarm);
     document.removeEventListener("click", onClick, true);
@@ -213,16 +235,32 @@
   }
 
   function checkUrl() {
-    if (location.href === lastUrl) return;
-    lastUrl = location.href;
-    onScroll();
-    if (job?.kind === "live") {
-      // Ask the worker where we are now. It owns the decision: it holds `pending` and the
-      // shared matcher, and it is the only place allowed to move the tour forward.
-      void resync();
+    const moved = location.href !== lastUrl;
+    if (moved) {
+      lastUrl = location.href;
+      onScroll();
+    }
+
+    if (job?.kind !== "live") {
+      if (moved) reportNavigation();
       return;
     }
-    reportNavigation();
+
+    // The worker owns the decision: it holds `pending` and the shared matcher, and it is
+    // the only place allowed to move the tour forward.
+    if (moved) {
+      needsResync = true;
+      resyncFailures = 0;
+      resyncSkipTicks = 0;
+    }
+    if (!needsResync) return;
+    // Backoff after a failure: retry on the very next tick (a sleeping worker answers the
+    // second time), then slow down rather than hammering every 350ms.
+    if (resyncSkipTicks > 0) {
+      resyncSkipTicks -= 1;
+      return;
+    }
+    void resync();
   }
 
   /**
@@ -239,7 +277,16 @@
     stopObserver();
     try {
       const reply = await send({ type: "tg:hello", loc: locationParts() }).catch(() => null);
-      if (!reply?.ok) return;
+      if (!reply?.ok) {
+        // Left pending on purpose: the watcher keeps ticking and will try again. A
+        // transient error must not strand somebody halfway through a guide.
+        resyncFailures += 1;
+        resyncSkipTicks = Math.min(resyncFailures - 1, 8);
+        return;
+      }
+      needsResync = false;
+      resyncFailures = 0;
+      resyncSkipTicks = 0;
       if (!reply.data.job) {
         // The worker has no job for this tab any more — the tour finished on arrival.
         disarm();
@@ -673,6 +720,11 @@
     const step = steps[index];
     stopObserver();
 
+    // 0. A click has been made and the browser is on its way somewhere. Nothing here may
+    //    be touched until the worker says we arrived — moving the step now would leave a
+    //    `pending` aimed at a destination the tour is no longer going to.
+    if ((job.tour ?? {}).pending) return renderAwaitingNavigation(index);
+
     // 1. Is this even the right page? The worker resolved `pending` before we got here,
     //    so anything still not matching is a step we have to travel to.
     const decision = TOUR.navigationDecision(liveView(), index, locationParts(), SCHEMA);
@@ -709,6 +761,20 @@
     // 4. An auto step acts by itself — once. The claim is written through the worker
     //    before the click, so a re-render or a repeated event cannot fire a second.
     if (behaviour.auto) void runAuto(step, index);
+  }
+
+  /** Between the click and the arrival. Only Thoát is offered; nothing else is safe. */
+  function renderAwaitingNavigation(index) {
+    ui.hideBox();
+    ui.showCard(
+      {
+        title: "Đang mở bước tiếp theo…",
+        meta: liveMeta(index),
+        body: "Đã thực hiện thao tác của bước này, đang chờ trang chuyển.",
+        actions: [{ id: "exit", label: "Thoát" }],
+      },
+      onLiveAction,
+    );
   }
 
   function renderWaiting(index, reason) {
@@ -797,6 +863,16 @@
   async function pressStep(step, index) {
     if (liveBusy) return;
     liveBusy = true;
+
+    // Everything the authorisation was granted for. The claim round trip is a real gap:
+    // the person can press Thoát inside it, and a click that arrives after that is a
+    // click on a tour they already left.
+    const gen = liveGeneration;
+    const sessionId = job.id;
+    const stepId = step.id;
+
+    const stale = () => liveGeneration !== gen || !job || job.id !== sessionId || liveIndex() !== index;
+
     try {
       const behaviour = TOUR.behaviourOf(step.action?.type);
       const target = RESOLVE.resolveTarget(step, domApi());
@@ -807,12 +883,22 @@
       const next = { ...state, phase: behaviour.waitsUrl ? "waiting_url" : "showing" };
       if (behaviour.waitsUrl) next.pending = TOUR.pendingFor(liveView(), index, SCHEMA);
 
-      const claim = await send({ type: "tg:tour-claim", index, stepId: step.id, tour: next }).catch(() => null);
-      if (!claim?.ok) return void renderStalled(index, "Không lưu được trạng thái bước.");
+      const claim = await send({ type: "tg:tour-claim", index, stepId, tour: next }).catch(() => null);
+      if (!claim?.ok) {
+        if (!stale()) renderStalled(index, "Không lưu được trạng thái bước.");
+        return;
+      }
       if (!claim.data.claimed) {
         // Someone else got there first, or the tour has already moved on. Not an error —
         // just nothing left for this caller to do.
-        if (claim.data.job) job = claim.data.job;
+        if (!stale() && claim.data.job) job = claim.data.job;
+        return;
+      }
+
+      // Checked AFTER the claim and BEFORE the click, and before adopting the reply:
+      // assigning `job` here would resurrect a tour the person has exited.
+      if (stale()) {
+        await send({ type: "tg:tour-release", index, stepId }).catch(() => {});
         return;
       }
       job = claim.data.job;
@@ -820,13 +906,16 @@
       try {
         target.element.click();
       } catch (err) {
-        await send({ type: "tg:tour-release", index, stepId: step.id }).catch(() => {});
+        await send({ type: "tg:tour-release", index, stepId }).catch(() => {});
         // A failed click must not advance the tour: the person would be shown the step
         // after one that never happened.
-        return void renderStalled(index, `Không bấm được phần tử: ${err?.message ?? err}`);
+        if (!stale()) renderStalled(index, `Không bấm được phần tử: ${err?.message ?? err}`);
+        return;
       }
 
-      if (!behaviour.waitsUrl) await goToLiveStep(index + 1);
+      if (stale()) return;
+      if (behaviour.waitsUrl) return void renderAwaitingNavigation(index);
+      await goToLiveStep(index + 1);
     } finally {
       liveBusy = false;
     }
@@ -840,6 +929,8 @@
   async function goToLiveStep(index) {
     if (index < 0) return;
     if (index >= liveSteps().length) return exitTour();
+    // A step change invalidates anything still in flight for the previous step.
+    liveGeneration += 1;
     liveBusy = false;
     const saved = await saveTour({
       index,
@@ -859,11 +950,17 @@
     const index = liveIndex();
     const step = liveSteps()[index];
 
+    // Exit is always available — it is the way out of every stuck state — and it makes
+    // any in-flight operation stale on the way.
     if (id === "exit") return void exitTour();
+
+    // Nothing else may run while a click is in flight, or while the browser is on its way
+    // to the next step: both would move the tour out from under an operation that was
+    // authorised for where it used to be.
+    if (liveBusy) return;
+    if ((job.tour ?? {}).pending) return;
+
     if (id === "retry" || id === "wait") {
-      // Retry re-renders; it must not slip past the lock and fire a second click on a
-      // step whose first click is still in flight.
-      if (liveBusy) return;
       stopObserver();
       return void render();
     }
