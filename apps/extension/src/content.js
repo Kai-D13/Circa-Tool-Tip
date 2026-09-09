@@ -249,6 +249,9 @@
     // The worker owns the decision: it holds `pending` and the shared matcher, and it is
     // the only place allowed to move the tour forward.
     if (moved) {
+      // The page under an in-flight click is gone. A claim granted for the old DOM must
+      // not land on the new one, so everything already in flight becomes stale here.
+      liveGeneration += 1;
       needsResync = true;
       resyncFailures = 0;
       resyncSkipTicks = 0;
@@ -274,9 +277,13 @@
   async function resync() {
     if (resyncInFlight) return;
     resyncInFlight = true;
+    const token = liveToken();
     stopObserver();
     try {
       const reply = await send({ type: "tg:hello", loc: locationParts() }).catch(() => null);
+      // The tour ended or moved while we were asking. Whatever came back describes a
+      // situation that is over; `needsResync` is left for whoever owns the tour now.
+      if (isStale(token)) return;
       if (!reply?.ok) {
         // Left pending on purpose: the watcher keeps ticking and will try again. A
         // transient error must not strand somebody halfway through a guide.
@@ -686,12 +693,44 @@
     observerTimer = null;
   }
 
-  /** Persist through the worker, then adopt what it wrote. Returns false on refusal. */
+  /**
+   * Which tour an async operation was authorised for.
+   *
+   * Every round trip to the worker is a window in which the person can press Thoát, the
+   * SPA can change route, or the tour can move to another step. A reply that lands after
+   * any of those belongs to a tour that no longer exists — and assigning `job` from it
+   * resurrects it, overlay and all.
+   *
+   * One helper, used by EVERY operation that writes `job`. Guarding only the call site
+   * where the bug was reported is how the next one gets missed.
+   */
+  function liveToken() {
+    return { generation: liveGeneration, sessionId: job?.id ?? null, index: job?.index ?? null };
+  }
+
+  function isStale(token) {
+    return (
+      liveGeneration !== token.generation ||
+      !job ||
+      job.id !== token.sessionId ||
+      (job.index ?? null) !== token.index
+    );
+  }
+
+  /**
+   * Persist through the worker, then adopt what it wrote — but only if it is still ours.
+   *
+   * Returns "ok", "failed" (the worker refused) or "stale" (the tour moved on while we
+   * waited). Callers must tell the last two apart: a failure is worth ending the tour
+   * over, staleness means somebody else already did.
+   */
   async function saveTour(patch) {
+    const token = liveToken();
     const reply = await send({ type: "tg:tour-state", ...patch }).catch(() => null);
-    if (!reply?.ok) return false;
+    if (isStale(token)) return "stale";
+    if (!reply?.ok) return "failed";
     job = reply.data.job;
-    return true;
+    return "ok";
   }
 
   const NAV_ACTIONS = [
@@ -842,7 +881,8 @@
     const saved = await saveTour({
       tour: { ...(job.tour ?? {}), navGuard: { url, createdAt: new Date().toISOString() }, phase: "waiting_url" },
     });
-    if (!saved) return void disarm();
+    if (saved === "stale") return;
+    if (saved !== "ok") return void disarm();
     location.href = url;
   }
 
@@ -865,13 +905,11 @@
     liveBusy = true;
 
     // Everything the authorisation was granted for. The claim round trip is a real gap:
-    // the person can press Thoát inside it, and a click that arrives after that is a
-    // click on a tour they already left.
-    const gen = liveGeneration;
-    const sessionId = job.id;
+    // the person can press Thoát inside it, the SPA can change route, and a click that
+    // arrives after either is a click on a page or a tour that has moved on.
+    const token = liveToken();
     const stepId = step.id;
-
-    const stale = () => liveGeneration !== gen || !job || job.id !== sessionId || liveIndex() !== index;
+    const stale = () => isStale(token);
 
     try {
       const behaviour = TOUR.behaviourOf(step.action?.type);
@@ -936,7 +974,8 @@
       index,
       tour: { phase: "showing", pending: null, navGuard: null, executedStepId: null },
     });
-    if (!saved) return void disarm();
+    if (saved === "stale") return;
+    if (saved !== "ok") return void disarm();
     render();
   }
 

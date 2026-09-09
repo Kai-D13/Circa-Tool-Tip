@@ -26,6 +26,10 @@ function loadContent({
   log = [],
   /** Hold the claim reply open so a test can act inside the window before the click. */
   holdClaim = false,
+  /** Message types whose reply is held open until releaseHold() — the async window. */
+  hold = [],
+  /** Per-type call index from which to start holding, e.g. { "tg:hello": 2 }. */
+  holdFrom = {},
   /** 1-based indices of tg:hello calls that should come back as a failure. */
   failHelloCalls = [],
 } = {}) {
@@ -34,9 +38,10 @@ function loadContent({
     execFileSync(process.execPath, [resolve(EXT, "build.mjs"), "--out", out], { stdio: "pipe" });
 
     const sent = [];
-    let helloCalls = 0;
-    let releaseClaim = () => {};
-    const claimGate = holdClaim ? new Promise((r) => (releaseClaim = r)) : null;
+    let releaseHold = () => {};
+    const held = new Set([...hold, ...Object.keys(holdFrom), ...(holdClaim ? ["tg:tour-claim"] : [])]);
+    const holdGate = held.size ? new Promise((r) => (releaseHold = r)) : null;
+    const callsByType = new Map();
     let onMessage = null;
     const timers = [];
     const observers = [];
@@ -93,9 +98,15 @@ function loadContent({
           async sendMessage(message) {
             sent.push(message);
             log.push({ kind: "send", type: message.type, message });
+            // Held BEFORE the handler runs, so the reply is computed against the state
+            // that exists when it is finally released — exactly like a slow worker.
+            const seen = (callsByType.get(message.type) ?? 0) + 1;
+            callsByType.set(message.type, seen);
+            if (holdGate && held.has(message.type) && seen >= (holdFrom[message.type] ?? 1)) {
+              await holdGate;
+            }
             if (message.type === "tg:hello") {
-              helloCalls += 1;
-              if (failHelloCalls.includes(helloCalls)) {
+              if (failHelloCalls.includes(seen)) {
                 return { v: 1, ok: false, type: "tg:hello", error: { code: "INTERNAL", message: "tạm lỗi" } };
               }
               return { v: 1, ok: true, type: "tg:hello", data: { tabId: 7, job: current } };
@@ -111,7 +122,6 @@ function loadContent({
             // Mirrors store.claimStep exactly: granted only when the tour is still on the
             // index the caller saw and the step has not already been claimed.
             if (message.type === "tg:tour-claim") {
-              if (claimGate) await claimGate;
               if (current.index !== message.index) {
                 return { v: 1, ok: true, type: message.type, data: { claimed: false, reason: "moved", job: current } };
               }
@@ -187,8 +197,10 @@ function loadContent({
       spaNavigate,
       liveTimers,
       pump,
-      releaseClaim: () => releaseClaim(),
-      helloCount: () => helloCalls,
+      releaseClaim: () => releaseHold(),
+      releaseHold: () => releaseHold(),
+      // Counted BEFORE the hold gate, so a request still in flight is visible to the test.
+      helloCount: () => callsByType.get("tg:hello") ?? 0,
       setJob: (next) => (current = next),
       deliver: (message) => onMessage(message),
       timers,
@@ -1532,4 +1544,142 @@ test("P0: click_wait_url đã claim thì bấm Tiếp lần nữa cũng chỉ m�
   await tick();
 
   assert.equal(el.clicks, 1);
+});
+
+/* ====== 3B.1.2: MỌI callback async đều phải hỏi "tour này còn là của tôi không" === */
+
+test("P0: phản hồi tg:tour-state cũ không làm tour đã Thoát sống lại", async () => {
+  // Bước highlight: Tiếp gọi thẳng saveTour. Người dùng bấm Thoát trong lúc chờ, rồi
+  // phản hồi cũ mới về — gán lại job ở đó là dựng lại một tour đã bị dọn.
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const run = loadContent({
+    job: liveJob([liveStep(), liveStep({ id: "st_2" }), liveStep({ id: "st_3" })]),
+    matches: { "#basic-button": [el] },
+    log,
+    hold: ["tg:tour-state"],
+  });
+  await tick();
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+  pressCard(run.document, "Thoát");
+  await tick();
+  assert.equal(run.document.body.children.length, 0, "đã dọn overlay");
+
+  run.releaseHold();
+  await tick();
+  await tick();
+
+  assert.equal(run.document.body.children.length, 0, "phản hồi cũ không được vẽ lại tour");
+});
+
+test("P0: phản hồi tg:hello của resync cũ không làm tour sống lại", async () => {
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const steps = [liveStep(), liveStep({ id: "st_2", urlPattern: "/don-hang" })];
+  // Handshake (lần 1) đi qua bình thường; resync (lần 2) mới bị giữ.
+  const run = loadContent({
+    job: liveJob(steps),
+    matches: { "#basic-button": [el] },
+    log,
+    holdFrom: { "tg:hello": 2 },
+  });
+  await tick();
+  assert.equal(run.document.body.children.length, 1, "đã arm");
+
+  run.spaNavigate("https://pos.v2.circa.vn/don-hang");
+  await tick();
+  assert.ok(run.helloCount() >= 2, "resync đang bay");
+
+  run.deliver({ type: "tg:disarm" });
+  await tick();
+  assert.equal(run.document.body.children.length, 0, "đã dọn");
+
+  run.releaseHold();
+  await tick();
+  await tick();
+
+  assert.equal(run.document.body.children.length, 0, "Thoát rồi thì resync không được vẽ lại");
+});
+
+test("P0: URL đổi trong lúc claim đang chờ thì không click phần tử của trang cũ", async () => {
+  // Claim được cấp cho DOM của trang cũ. SPA đã chuyển trang, phần tử đó không còn là
+  // thứ người dùng đang nhìn.
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const run = loadContent({
+    job: liveJob([
+      liveStep({ action: { type: "click_next", expectedUrl: "", timeoutMs: 20 } }),
+      liveStep({ id: "st_2", urlPattern: "/don-hang" }),
+    ]),
+    matches: { "#basic-button": [el] },
+    log,
+    holdClaim: true,
+  });
+  await tick();
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+
+  run.spaNavigate("https://pos.v2.circa.vn/don-hang");
+  await tick();
+
+  run.releaseHold();
+  await tick();
+  await tick();
+
+  assert.equal(el.clicks, 0, "không được bấm phần tử của trang đã rời khỏi");
+  assert.ok(sentOfType(run.sent, "tg:tour-release").length > 0, "claim phải được trả lại");
+});
+
+test("P0: phản hồi của bước cũ không ghi đè bước hiện tại", async () => {
+  // goToLiveStep tăng generation trước khi lưu; một phản hồi thuộc về bước trước đó
+  // quay về sau khi tour đã đi tiếp không được gán lại job.
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const steps = [liveStep(), liveStep({ id: "st_2", title: "Bước hai" }), liveStep({ id: "st_3", title: "Bước ba" })];
+  const run = loadContent({ job: liveJob(steps), matches: { "#basic-button": [el] }, log, hold: ["tg:tour-state"] });
+  await tick();
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+
+  // Trong lúc chờ, worker đẩy tour sang bước 3 (đúng phiên đó).
+  run.deliver({ type: "tg:session", session: liveJob(steps, { index: 2 }) });
+  await tick();
+  assert.equal(cardText(run.document, ".title"), "Bước ba");
+
+  run.releaseHold();
+  await tick();
+  await tick();
+
+  assert.equal(cardText(run.document, ".title"), "Bước ba", "phản hồi cũ không được kéo về bước 2");
+});
+
+test("luồng bình thường không stale vẫn chạy đủ", async () => {
+  // Guard chỉ được chặn thứ đã cũ; nếu nó chặn cả đường đi bình thường thì tour không
+  // bao giờ tiến được bước nào.
+  const log = [];
+  const el = pageEl("Cài Đặt", "button", { log });
+  const steps = [
+    liveStep({ action: { type: "click_next", expectedUrl: "", timeoutMs: 20 } }),
+    liveStep({ id: "st_2", title: "Bước hai" }),
+    liveStep({ id: "st_3", title: "Bước ba" }),
+  ];
+  const run = loadContent({ job: liveJob(steps), matches: { "#basic-button": [el] }, log });
+  await tick();
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+  assert.equal(el.clicks, 1);
+  assert.equal(cardText(run.document, ".title"), "Bước hai");
+
+  pressCard(run.document, "Tiếp");
+  await tick();
+  assert.equal(cardText(run.document, ".title"), "Bước ba");
+
+  pressCard(run.document, "Quay lại");
+  await tick();
+  assert.equal(cardText(run.document, ".title"), "Bước hai", "Quay lại vẫn hoạt động");
 });
