@@ -78,6 +78,8 @@ export const CONTENT_TYPES = [
   "tg:preview-step",
   "tg:start-tour",
   "tg:tour-state",
+  "tg:tour-claim",
+  "tg:tour-release",
   "tg:tour-exit",
 ];
 

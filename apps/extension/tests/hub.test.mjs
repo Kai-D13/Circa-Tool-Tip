@@ -1062,3 +1062,126 @@ test("3B: service worker khởi động lại vẫn tìm thấy tour đang chạ
   assert.equal(reply.data.job.index, 1, "vẫn đúng bước đang dở");
   assert.equal(reply.data.job.job.releaseRevision, 3, "và vẫn giữ nguyên ghim");
 });
+
+/* ================== 3B.1: checksum, claim, và kết thúc khi tới nơi ============= */
+
+test("P0: cùng revision nhưng khác checksum thì không cho chạy", async () => {
+  // Đây đúng là hợp đồng vừa sửa ở 3A.1: revision xác định BẢN NÀO, checksum xác định
+  // trong bản đó có gì. Chạy guide từ một cache không ai bảo chứng được là bỏ luôn nó.
+  const sync = fakeReleaseCache();
+  sync.status = async () => ({ pos: { site: "pos", state: "ok", revision: 3, checksum: "sha256:KHAC" } });
+  const { hub, store } = liveHub({ sync });
+
+  const reply = await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  assert.equal(reply.error.code, "INVALID_RELEASE");
+  assert.match(reply.error.message, /checksum/i);
+  assert.equal(await store.findByTab(7), null);
+  assert.ok(sync.cache.pos, "cache không bị đụng tới");
+});
+
+test("P0: cùng checksum nhưng khác revision cũng không cho chạy", async () => {
+  const sync = fakeReleaseCache();
+  sync.status = async () => ({ pos: { site: "pos", state: "ok", revision: 9, checksum: "sha256:aaa" } });
+  const { hub } = liveHub({ sync });
+  const reply = await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  assert.equal(reply.error.code, "INVALID_RELEASE");
+});
+
+test("P0: có cache nhưng chưa từng đồng bộ thì yêu cầu đồng bộ trước", async () => {
+  const sync = fakeReleaseCache();
+  sync.status = async () => ({});
+  const { hub, store } = liveHub({ sync });
+
+  const reply = await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  assert.equal(reply.error.code, "INVALID_RELEASE");
+  assert.match(reply.error.message, /Đồng bộ/);
+  assert.equal(await store.findByTab(7), null);
+});
+
+test("P0: mất mạng (state error) vẫn chạy được bản cache nếu khớp cả hai", async () => {
+  // Một máy offline cả buổi sáng vẫn phải dùng được bộ hướng dẫn nó đang giữ.
+  const sync = fakeReleaseCache();
+  sync.status = async () => ({
+    pos: { site: "pos", state: "error", message: "Failed to fetch", revision: 3, checksum: "sha256:aaa" },
+  });
+  const { hub, store } = liveHub({ sync });
+
+  const reply = await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  assert.equal(reply.ok, true);
+  assert.equal((await store.findByTab(7)).job.releaseRevision, 3);
+});
+
+test("P0: hai claim đồng thời trên cùng một bước, đúng một cái thắng", async () => {
+  // Store có hàng đợi nhưng hàng đợi không làm hai lần ghi giống hệt nhau nhận ra nhau.
+  // Compare-and-set mới làm được.
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  const session = await store.findByTab(7);
+
+  const results = await Promise.all([
+    store.claimStep(session.id, { index: 0, stepId: "st_1", tour: { phase: "showing" } }, 7),
+    store.claimStep(session.id, { index: 0, stepId: "st_1", tour: { phase: "showing" } }, 7),
+  ]);
+
+  assert.equal(results.filter((r) => r.claimed).length, 1, "đúng một caller được phép bấm");
+  assert.equal(results.find((r) => !r.claimed).reason, "claimed");
+});
+
+test("P0: claim bị từ chối khi tour đã sang bước khác", async () => {
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  const session = await store.findByTab(7);
+  await store.setTour(session.id, { index: 1, tour: { phase: "showing" } }, 7);
+
+  const result = await store.claimStep(session.id, { index: 0, stepId: "st_1", tour: {} }, 7);
+  assert.equal(result.claimed, false);
+  assert.equal(result.reason, "moved");
+});
+
+test("P0: trả claim chỉ khi nó vẫn là của mình", async () => {
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  const session = await store.findByTab(7);
+  await store.claimStep(session.id, { index: 0, stepId: "st_1", tour: { phase: "showing" } }, 7);
+
+  // Tour đã đi tiếp: trả claim lúc này sẽ xoá claim của người khác.
+  await store.setTour(session.id, { index: 1, tour: { phase: "showing", executedStepId: "st_2" } }, 7);
+  await store.releaseStep(session.id, { index: 0, stepId: "st_1" }, 7);
+
+  assert.equal((await store.findByTab(7)).tour.executedStepId, "st_2", "không được đụng vào claim đang có");
+});
+
+test("P0: trả claim xong thì bấm lại được", async () => {
+  const { hub, store } = liveHub();
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  const session = await store.findByTab(7);
+
+  await store.claimStep(session.id, { index: 0, stepId: "st_1", tour: {} }, 7);
+  await store.releaseStep(session.id, { index: 0, stepId: "st_1" }, 7);
+  const again = await store.claimStep(session.id, { index: 0, stepId: "st_1", tour: {} }, 7);
+
+  assert.equal(again.claimed, true, "bấm hỏng rồi thì phải thử lại được");
+});
+
+test("P1: wait-url ở bước cuối tới nơi thì tour kết thúc, không quay lại bước cuối", async () => {
+  // Kẹp index về bước cuối rồi vẽ lại là auto-click bước đó lần thứ hai.
+  const single = releasePayload({
+    guides: [
+      releaseGuide({
+        steps: [liveStep({ action: { type: "auto_click_wait_url", expectedUrl: "/xong", timeoutMs: 0 } })],
+      }),
+    ],
+  });
+  const { hub, store } = liveHub({ sync: fakeReleaseCache({ pos: single }) });
+  await hub.handleContent("tg:start-tour", START_TOUR(), 7);
+  await hub.handleContent(
+    "tg:tour-state",
+    { tour: { phase: "waiting_url", pending: { fromIndex: 0, nextIndex: 1, expectedSite: "pos", expectedUrl: "/xong" } } },
+    7,
+  );
+
+  const reply = await hub.handleContent("tg:hello", { loc: loc("/xong") }, 7);
+
+  assert.equal(reply.data.job, null, "tour đã xong — trang phải tự dọn");
+  assert.equal(await store.findByTab(7), null, "và phiên được dọn khỏi tab");
+});

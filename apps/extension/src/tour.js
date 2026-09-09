@@ -137,9 +137,24 @@
       return { ok: false, reason: "Không tìm thấy phần tử của bước này trên trang." };
     }
     if (behaviour.auto) return autoClickGate(target, api);
+
     var resolve = root.TG_RESOLVE;
     if (!resolve.isActionableResolution(target)) {
       return { ok: false, reason: "Tìm thấy phần tử nhưng TEXT trên trang đã khác." };
+    }
+
+    // Visibility and enabled-ness are required for ANY step the runtime clicks, not just
+    // the automatic ones. `.click()` on a disabled button does not necessarily throw — it
+    // simply does nothing — and the tour would then move to the step after an action that
+    // never happened. `first_item` stays allowed here: choosing among several is the
+    // user's call when the user is the one pressing Tiếp.
+    if (behaviour.clicks) {
+      if (!api.isVisible(target.element)) {
+        return { ok: false, reason: "Phần tử đang ẩn — không bấm được." };
+      }
+      if (!api.isEnabled(target.element)) {
+        return { ok: false, reason: "Phần tử đang bị vô hiệu hoá — không bấm được." };
+      }
     }
     return { ok: true, reason: "" };
   }
@@ -165,16 +180,32 @@
   /**
    * After a navigation: has the browser arrived where the pending step was aiming?
    *
-   * Compared with the SHARED matcher, against the step we are trying to reach — not with
-   * a string compare on the URL. A guide that waits for `/don-hang` must also accept
-   * `/don-hang?tab=2`, and only `stepMatchesLocation` knows the rules for that.
+   * Matched against the destination RECORDED IN `pending`, not against whatever step now
+   * sits at `nextIndex`. Three things break when it is read from the next step instead:
+   * an explicit `action.expectedUrl` is ignored, `expectedSiteOverride` stops deciding
+   * anything, and a wait-url on the LAST step can never complete because there is no next
+   * step to read. The destination was already computed once, at the moment the click was
+   * about to happen; that is the answer, and it is the one that was persisted.
+   *
+   * Still the shared matcher, so `/don-hang` keeps accepting `/don-hang?tab=2`.
    */
   function pendingArrived(session, loc, schema) {
     var pending = session && session.pending;
-    if (!pending) return false;
-    var next = stepAt(session, pending.nextIndex);
-    if (!next) return false;
-    return schema.stepMatchesLocation(next, loc, contextOf(session));
+    if (!pending || !pending.expectedUrl) return false;
+    // A step-shaped probe: `stepSite` reads `.site` first, so expectedSite decides, and a
+    // null one falls through to the guide's own site via the context.
+    var destination = {
+      site: pending.expectedSite || undefined,
+      urlPattern: pending.expectedUrl,
+      navigationUrl: pending.expectedUrl,
+    };
+    return schema.stepMatchesLocation(destination, loc, contextOf(session));
+  }
+
+  /** Arriving at a pending whose next index is past the end means the tour is done. */
+  function pendingCompletesTour(session) {
+    var pending = session && session.pending;
+    return !!pending && pending.nextIndex >= stepCount(session);
   }
 
   /** Is the browser already where this step lives? */
@@ -231,6 +262,7 @@
     stepReadiness: stepReadiness,
     pendingFor: pendingFor,
     pendingArrived: pendingArrived,
+    pendingCompletesTour: pendingCompletesTour,
     stepMatchesHere: stepMatchesHere,
     urlForStep: urlForStep,
     navigationDecision: navigationDecision,

@@ -318,6 +318,20 @@ export function createHub({
         return ok("tg:tour-state", { job: moved });
       }
 
+      case "tg:tour-claim": {
+        const session = await liveSessionFor(tabId);
+        if (!session) return fail("tg:tour-claim", ERROR_CODES.NO_SESSION, "Tab này không đang chạy hướng dẫn nào.");
+        const result = await store.claimStep(session.id, { index: raw.index, stepId: raw.stepId, tour: raw.tour }, tabId);
+        return ok("tg:tour-claim", { claimed: result.claimed, reason: result.reason, job: result.session });
+      }
+
+      case "tg:tour-release": {
+        const session = await liveSessionFor(tabId);
+        if (!session) return ok("tg:tour-release", { released: false });
+        const released = await store.releaseStep(session.id, { index: raw.index, stepId: raw.stepId }, tabId);
+        return ok("tg:tour-release", { released: !!released, job: released });
+      }
+
       case "tg:tour-exit": {
         const session = await liveSessionFor(tabId);
         if (!session) return ok("tg:tour-exit", { stopped: false });
@@ -428,12 +442,33 @@ export function createHub({
       );
     }
 
+    // Revision AND checksum, the same pair sync.js compares. The revision says WHICH
+    // release; the checksum says what is in it. A cache that agrees on the number but not
+    // on the content is exactly the case 3A.1 was about, and running a guide out of it
+    // would undo that fix at the point where it matters most.
+    //
+    // `state: "error"` is deliberately fine: a machine that has been offline all morning
+    // still runs the release it holds. What is refused is content nobody can vouch for.
     const status = (await sync.status())[site];
-    if (status && status.revision && Number(status.revision) !== Number(payload.revision)) {
+    if (!status || !status.revision) {
+      return fail(
+        "tg:start-tour",
+        ERROR_CODES.INVALID_RELEASE,
+        `Chưa có trạng thái đồng bộ cho site ${site} — bấm Đồng bộ trước khi chạy hướng dẫn.`,
+      );
+    }
+    if (Number(status.revision) !== Number(payload.revision)) {
       return fail(
         "tg:start-tour",
         ERROR_CODES.INVALID_RELEASE,
         `Cache đang là revision ${payload.revision} nhưng trạng thái đồng bộ ghi ${status.revision}.`,
+      );
+    }
+    if (String(status.checksum || "") !== String(payload.checksum || "")) {
+      return fail(
+        "tg:start-tour",
+        ERROR_CODES.INVALID_RELEASE,
+        "Nội dung bản phát hành trong máy không khớp checksum đã đồng bộ — bấm Đồng bộ lại.",
       );
     }
 
@@ -476,6 +511,14 @@ export function createHub({
 
     const view = { ...session.job, index: session.index, pending: state.pending, navGuard: state.navGuard };
     if (!tour.pendingArrived(view, loc, schema)) return session;
+
+    // The last step was a wait-url one and the browser has arrived: the guide is finished.
+    // Clamping back onto the final step instead would re-render it — and an auto-click
+    // step re-rendered is an auto-click step performed twice.
+    if (tour.pendingCompletesTour(view)) {
+      await store.discard(session.id);
+      return null;
+    }
 
     const moved = await store.setTour(session.id, {
       index: state.pending.nextIndex,

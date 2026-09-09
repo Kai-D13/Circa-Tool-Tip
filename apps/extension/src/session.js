@@ -268,6 +268,61 @@ export function createRecorderStore(storage) {
       });
     },
 
+    /**
+     * Claim a step before clicking it. Compare-and-set, not a plain write.
+     *
+     * Two `Tiếp` presses in the same tick both read the same state, both write the same
+     * `executedStepId`, and both succeed — the queue serialises them but does not make
+     * either notice the other. On a POS that is two real orders. So the claim is only
+     * granted when the session is STILL on the index the caller saw and the step has not
+     * already been claimed; exactly one caller can be told `claimed: true`.
+     */
+    async claimStep(sessionId, { index, stepId, tour }, fromTabId) {
+      return enqueue(async () => {
+        const s = await read(sessionId);
+        if (!s || s.status !== "recording") return { claimed: false, reason: "gone", session: null };
+        if (s.kind !== "live") {
+          throw new SessionError(SESSION_ERRORS.INVALID_SESSION, `Phiên "${sessionId}" không phải tour đang chạy.`);
+        }
+        if (fromTabId !== undefined && s.tabId !== fromTabId) {
+          throw new SessionError(
+            SESSION_ERRORS.TAB_MISMATCH,
+            `Tour "${sessionId}" đang ở tab ${s.tabId}, không phải tab ${fromTabId}.`,
+          );
+        }
+        // The tour moved on while this caller was deciding: whatever it was about to click
+        // belongs to a step that is no longer current.
+        if (s.index !== index) return { claimed: false, reason: "moved", session: s };
+        if (s.tour && s.tour.executedStepId === stepId) {
+          return { claimed: false, reason: "claimed", session: s };
+        }
+
+        const next = {
+          ...s,
+          tour: { ...(tour ?? s.tour ?? {}), executedStepId: stepId },
+          updatedAt: new Date().toISOString(),
+        };
+        return { claimed: true, reason: "", session: await write(next) };
+      });
+    },
+
+    /**
+     * Hand a claim back after a click that threw.
+     *
+     * Only when it is still ours: if the tour has moved on, or something else claimed the
+     * step in the meantime, releasing would clear a claim that belongs to someone else and
+     * open the door to the second click this whole mechanism exists to prevent.
+     */
+    async releaseStep(sessionId, { index, stepId }, fromTabId) {
+      return enqueue(async () => {
+        const s = await read(sessionId);
+        if (!s || s.status !== "recording" || s.kind !== "live") return null;
+        if (fromTabId !== undefined && s.tabId !== fromTabId) return null;
+        if (s.index !== index || !s.tour || s.tour.executedStepId !== stepId) return s;
+        return write({ ...s, tour: { ...s.tour, executedStepId: null }, updatedAt: new Date().toISOString() });
+      });
+    },
+
     /** Replace the job payload — a second probe reusing the tab of the first. */
     async setJob(sessionId, job) {
       return enqueue(async () => {

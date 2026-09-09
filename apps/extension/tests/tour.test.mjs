@@ -242,3 +242,76 @@ test("module không tự viết lại resolver", () => {
   assert.match(TOUR_SRC, /TG_RESOLVE/);
   assert.ok(!/querySelectorAll|function resolveTarget/.test(TOUR_SRC), "tour.js không được tự tìm phần tử");
 });
+
+/* ============== 3B.1: đến nơi hay chưa phải hỏi ĐÍCH ĐÃ LƯU ==================== */
+
+test("P1: expectedUrl tường minh quyết định, không phải urlPattern của bước kế", () => {
+  // Lỗi cũ đọc thẳng bước kế, nên một action.expectedUrl viết tay bị bỏ qua hoàn toàn.
+  const s = session([step(), step({ id: "b", urlPattern: "/bước-kế", navigationUrl: "/bước-kế" })], {
+    pending: { fromIndex: 0, nextIndex: 1, expectedSite: "pos", expectedUrl: "/dich-tuong-minh" },
+  });
+
+  assert.equal(T.pendingArrived(s, at("/dich-tuong-minh"), SCHEMA), true, "đích đã lưu mới là đích");
+  assert.equal(T.pendingArrived(s, at("/bước-kế"), SCHEMA), false, "tới bước kế nhưng chưa tới đích");
+});
+
+test("P1: expectedSite trong pending quyết định site đích", () => {
+  const s = session([step(), step({ id: "b", site: "pos", urlPattern: "/quan-tri", navigationUrl: "/quan-tri" })], {
+    pending: { fromIndex: 0, nextIndex: 1, expectedSite: "admin", expectedUrl: "/quan-tri" },
+  });
+
+  assert.equal(T.pendingArrived(s, at("/quan-tri", SITES.admin), SCHEMA), true);
+  assert.equal(T.pendingArrived(s, at("/quan-tri", SITES.pos), SCHEMA), false, "đúng path nhưng sai site");
+});
+
+test("P1: wait-url ở BƯỚC CUỐI vẫn tới nơi được", () => {
+  // Không có bước kế để đọc, nên cách cũ trả false mãi mãi và tour treo ở bước cuối.
+  const s = session([step({ action: { type: "click_wait_url", expectedUrl: "/xong", timeoutMs: 0 } })], {
+    pending: { fromIndex: 0, nextIndex: 1, expectedSite: "pos", expectedUrl: "/xong" },
+  });
+
+  assert.equal(T.pendingArrived(s, at("/xong"), SCHEMA), true);
+  assert.equal(T.pendingCompletesTour(s), true, "tới nơi ở bước cuối nghĩa là xong tour");
+});
+
+test("P1: pending chưa tới bước cuối thì chưa phải kết thúc", () => {
+  const s = session([step(), step({ id: "b" })], {
+    pending: { fromIndex: 0, nextIndex: 1, expectedSite: "pos", expectedUrl: "/trang-chu" },
+  });
+  assert.equal(T.pendingCompletesTour(s), false);
+});
+
+test("P1: pending không có đích thì không bao giờ coi là đã tới", () => {
+  const s = session([step(), step({ id: "b" })], {
+    pending: { fromIndex: 0, nextIndex: 1, expectedSite: "pos", expectedUrl: "" },
+  });
+  assert.equal(T.pendingArrived(s, at("/trang-chu"), SCHEMA), false);
+});
+
+/* ============== 3B.1: mọi bước có click đều cần thấy được và bấm được ========== */
+
+test("P1: click_next từ chối phần tử ẩn hoặc bị vô hiệu hoá", () => {
+  const manual = step({ action: { type: "click_next", expectedUrl: "", timeoutMs: 0 } });
+  assert.match(T.stepReadiness(manual, target(), dom({ visible: false })).reason, /ẩn/);
+  assert.match(T.stepReadiness(manual, target(), dom({ enabled: false })).reason, /vô hiệu/);
+  assert.equal(T.stepReadiness(manual, target(), dom()).ok, true);
+});
+
+test("P1: click_wait_url cũng vậy", () => {
+  const manual = step({ action: { type: "click_wait_url", expectedUrl: "", timeoutMs: 0 } });
+  assert.equal(T.stepReadiness(manual, target(), dom({ enabled: false })).ok, false);
+});
+
+test("P1: bước không bấm gì thì không bị chặn vì ẩn", () => {
+  // highlight chỉ tô sáng — một phần tử ngoài màn hình vẫn cuộn tới được.
+  const highlight = step({ action: { type: "highlight", expectedUrl: "", timeoutMs: 0 } });
+  assert.equal(T.stepReadiness(highlight, target(), dom({ visible: false })).ok, true);
+});
+
+test("P1: bấm tay vẫn được phép chọn phần tử đầu, tự bấm thì không", () => {
+  const many = target({ via: "first_item", count: 12 });
+  const manual = step({ action: { type: "click_next", expectedUrl: "", timeoutMs: 0 } });
+  const auto = step({ action: { type: "auto_click_next", expectedUrl: "", timeoutMs: 0 } });
+  assert.equal(T.stepReadiness(manual, many, dom()).ok, true);
+  assert.equal(T.stepReadiness(auto, many, dom()).ok, false);
+});
